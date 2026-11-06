@@ -1,0 +1,21 @@
+# dependencies and build output
+node_modules/
+.expo/
+dist/
+web-build/
+ios/
+android/
+*.tsbuildinfo
+coverage/
+
+# local env files
+.env
+.env.*
+!.env.example
+
+# OS / editors
+.DS_Store
+*.log
+
+# Claude Code: clones of other repos used as context
+.context/
