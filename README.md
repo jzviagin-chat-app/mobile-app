@@ -277,6 +277,11 @@ npm ci                       # install exactly what package-lock.json says (≈ 
 CI (`.github/workflows/ci.yml`, job **`check`**) runs lint, format check, type check, tests, `expo-doctor`
 and a production bundle on every pull request and again on `main` after each merge.
 
+`package.json` → `expo.doctor.reactNativeDirectoryCheck.exclude` lists two packages that Expo itself brings
+in (`expo-modules-core` from `expo`, `@react-native-masked-view/masked-view` from `expo-router`). When
+expo-doctor can't download Expo's list of bundled modules (as happened on the CI runner), it checks them
+against React Native Directory and fails the build. Exclude only Expo-owned transitive packages here.
+
 ## 12. Build plan
 Each step is agreed with the owner, built on a branch and merged before the next (chat-infra `PLAN.md` phase 8).
 

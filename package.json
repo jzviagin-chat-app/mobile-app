@@ -77,5 +77,15 @@
       "/node_modules/@react-native/babel-preset/"
     ],
     "watchman": false
+  },
+  "expo": {
+    "doctor": {
+      "reactNativeDirectoryCheck": {
+        "exclude": [
+          "@react-native-masked-view/masked-view",
+          "expo-modules-core"
+        ]
+      }
+    }
   }
 }
