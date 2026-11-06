@@ -16,8 +16,9 @@ concurrency:
 
 jobs:
   check:
-    # Native Arm runner, free for public repos (same as the services).
-    runs-on: ubuntu-24.04-arm
+    # x86-64 runner (free for public repos). Not Arm like the services: React Native's Hermes compiler
+    # (used by `expo export`) ships only an x86-64 Linux binary, and this app builds no Docker image.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
