@@ -1,0 +1,12 @@
+node_modules/
+.expo/
+dist/
+coverage/
+ios/
+android/
+.context/
+package-lock.json
+expo-env.d.ts
+
+# Docs are hand-formatted (Prettier would re-indent lists and change meaning)
+*.md

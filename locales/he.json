@@ -1,0 +1,14 @@
+{
+  "app": {
+    "name": "Walkie Talkie"
+  },
+  "auth": {
+    "loggedOut": {
+      "title": "ברוכים הבאים ל-Walkie Talkie",
+      "subtitle": "כניסה עם מספר הטלפון. בקרוב."
+    }
+  },
+  "home": {
+    "title": "צ׳אטים"
+  }
+}
