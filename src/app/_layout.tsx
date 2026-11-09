@@ -44,7 +44,9 @@ const RootNavigator = observer(function RootNavigator() {
           contentStyle: { backgroundColor: theme.colors.background },
         }}
       >
-        <Stack.Protected guard={auth.isSignedIn}>
+        {/* The app starts at "/", which is (app)/index. Signed out, that screen is guarded off, so without
+            redirectTo the start URL matches nothing ("Unmatched Route"). */}
+        <Stack.Protected guard={auth.isSignedIn} redirectTo="/welcome">
           <Stack.Screen name="(app)" />
         </Stack.Protected>
         <Stack.Protected guard={!auth.isSignedIn}>
