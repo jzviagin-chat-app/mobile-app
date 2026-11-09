@@ -16,13 +16,16 @@
     "typecheck": "tsc --noEmit",
     "test": "jest",
     "check": "npm run lint && npm run format:check && npm run typecheck && npm test",
-    "doctor": "expo-doctor"
+    "doctor": "expo-doctor",
+    "api:gen": "node scripts/api-gen.mjs"
   },
   "dependencies": {
     "@tanstack/query-core": "^5.106.1",
     "expo": "~58.0.23",
     "expo-constants": "~58.0.15",
     "expo-dev-client": "~58.0.18",
+    "expo-device": "~58.0.5",
+    "expo-file-system": "~58.0.13",
     "expo-linking": "~58.0.16",
     "expo-localization": "~58.0.5",
     "expo-router": "~58.0.30",
@@ -31,8 +34,10 @@
     "expo-status-bar": "~58.0.4",
     "expo-system-ui": "~58.0.7",
     "i18next": "^26.7.2",
+    "libphonenumber-js": "^1.13.15",
     "mobx": "^7.1.5",
     "mobx-react-lite": "^5.1.2",
+    "openapi-fetch": "^0.17.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "react-i18next": "^17.1.13",
