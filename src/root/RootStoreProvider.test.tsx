@@ -4,6 +4,7 @@ import { Text } from 'react-native';
 
 import type { RootStore } from './root-store';
 import { RootStoreProvider, useRootStore } from './RootStoreProvider';
+import { testDeps } from './test-deps';
 
 /** Records every store it sees and shows the session status. */
 function makeProbe(seen: RootStore[]) {
@@ -19,7 +20,7 @@ describe('RootStoreProvider', () => {
     const seen: RootStore[] = [];
     const Probe = makeProbe(seen);
     const ui = (
-      <RootStoreProvider deps={{ locales: [{ languageCode: 'en' }] }}>
+      <RootStoreProvider deps={testDeps()}>
         <Probe />
       </RootStoreProvider>
     );
@@ -36,7 +37,7 @@ describe('RootStoreProvider', () => {
     const seen: RootStore[] = [];
     const Probe = makeProbe(seen);
     await render(
-      <RootStoreProvider deps={{ locales: [{ languageCode: 'he' }] }}>
+      <RootStoreProvider deps={testDeps({ locales: [{ languageCode: 'he' }] })}>
         <Probe />
       </RootStoreProvider>,
     );
@@ -47,7 +48,7 @@ describe('RootStoreProvider', () => {
     const seen: RootStore[] = [];
     const Probe = makeProbe(seen);
     const { unmount } = await render(
-      <RootStoreProvider deps={{ locales: [] }}>
+      <RootStoreProvider deps={testDeps()}>
         <Probe />
       </RootStoreProvider>,
     );
