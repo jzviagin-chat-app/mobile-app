@@ -24,8 +24,29 @@ SessionStart hook (`.claude/hooks/load-design.sh`).
 
 ## Rules for this repo
 - This is the foundation of the real app, not a demo: structure, naming and tests as for production.
-- Never log or display tokens, SMS codes or full phone numbers. Tokens only in secure storage.
-- (Stack, layout and the checks to run before every commit: added in step 1, once agreed.)
+- Never log or display tokens, SMS codes or full phone numbers. Tokens only in secure storage; the
+  registration token only in memory. Log only through `src/lib/log.ts` (`console` is a lint error).
+- Expo changes every SDK: check the versioned docs (SDK 58) before using an Expo / React Native API.
+  Native packages only with `npx expo install`; never edit `ios/` / `android/` (generated from `app.config.ts`).
+- Layers: `src/app` (thin routes) → `src/root` → `src/features/<name>` → `src/lib`, `src/ui`. Never upwards;
+  another feature only through its `index.ts`. ESLint enforces it.
+- State: screens read only MobX stores (`observer` components). Stores: `makeAutoObservable`, changes only in
+  actions, async with `flow`, dependencies through the constructor (never the whole root). Request/reply
+  server data via TanStack Query behind a store (`MobxQuery`, README §5); detail screens use per-id models,
+  never a global `setId`. Reactions only in stores, disposed in `dispose()`.
+- Forms: `useActionState`, dispatched in `startTransition`; actions return errors as state, never throw.
+- Styles: theme tokens only (light + dark); `start`/`end`, never `left`/`right`. Texts only via i18n keys,
+  in both `locales/he.json` and `locales/en.json`.
+- Tests with every change: stores and pure functions unit-tested; screens rendered in he + en, light + dark.
+- Docs (`*.md`) are hand-formatted; Prettier skips them.
+
+## Before every commit
+```bash
+npm run check    # = lint (0 warnings) + prettier --check + tsc --noEmit + jest
+```
+CI (job `check`) runs the same plus `npm run doctor` and `npx expo export --platform android`; run those too
+when dependencies, `app.config.ts` or imports change. Run `git status` first: no `.env*.local`, `ios/`,
+`android/`, `dist/` or signing files.
 
 ## Keeping the design current
 If a change affects a service, a contract (endpoints, tokens, error codes, WebSocket messages), the infra or a

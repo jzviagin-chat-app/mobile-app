@@ -1,0 +1,71 @@
+// ESLint flat config (≈ .eslintrc for ESLint 9). Expo's rules + Prettier + our import layers.
+const { defineConfig } = require('eslint/config');
+const expoConfig = require('eslint-config-expo/flat');
+const prettierConfig = require('eslint-config-prettier/flat');
+
+module.exports = defineConfig([
+  expoConfig,
+  prettierConfig,
+  {
+    ignores: [
+      'dist/*',
+      'coverage/*',
+      'ios/*',
+      'android/*',
+      '.expo/*',
+      '.context/*',
+      'expo-env.d.ts',
+    ],
+  },
+  {
+    settings: {
+      'import/resolver': { typescript: { project: './tsconfig.json' } },
+    },
+    rules: {
+      // Use src/lib/log.ts (it masks phone numbers and tokens).
+      'no-console': 'error',
+      'import/no-cycle': 'error',
+      // Layers: app (routes) → root → features → lib, ui. Never upwards.
+      'import/no-restricted-paths': [
+        'error',
+        {
+          zones: [
+            { target: './src/root', from: './src/app', message: 'root must not import routes' },
+            {
+              target: './src/features',
+              from: ['./src/app', './src/root'],
+              message: 'features must not import routes or the root store (receive what you need)',
+            },
+            {
+              target: './src/lib',
+              from: ['./src/app', './src/root', './src/features', './src/ui'],
+              message: 'lib is the bottom layer',
+            },
+            {
+              target: './src/ui',
+              from: ['./src/app', './src/root', './src/features'],
+              message: 'ui must not import features, the root store or routes',
+            },
+          ],
+        },
+      ],
+      // Another feature only through its public index: '@/features/auth', never '@/features/auth/…'.
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['@/features/*/**'],
+              message:
+                "Import a feature only through its index ('@/features/<name>'); inside a feature use relative paths.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    files: ['**/*.test.ts', '**/*.test.tsx', 'jest.setup.ts'],
+    rules: { 'import/no-restricted-paths': 'off' },
+  },
+]);

@@ -3,19 +3,37 @@ node_modules/
 .expo/
 dist/
 web-build/
-ios/
-android/
+expo-env.d.ts
 *.tsbuildinfo
 coverage/
 
-# local env files
+# generated native projects (Continuous Native Generation: config lives in app.config.ts)
+/ios
+/android
+.kotlin/
+
+# signing material: never commit
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.pem
+
+# Metro
+.metro-health-check*
+
+# env files: only the committed, public ones (no secrets in the app)
 .env
 .env.*
 !.env.example
+!.env.development
+!.env.production
 
-# OS / editors
+# OS / editors / logs
 .DS_Store
 *.log
+npm-debug.*
 
 # Claude Code: clones of other repos used as context
 .context/

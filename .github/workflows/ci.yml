@@ -1,0 +1,50 @@
+name: ci
+
+# The same checks you run locally before every commit (CLAUDE.md), on every pull request and again on main
+# after each merge. The job is named `check`: mark it required in branch protection. No app builds here.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    # x86-64 runner (free for public repos). Not Arm like the services: React Native's Hermes compiler
+    # (used by `expo export`) ships only an x86-64 Linux binary, and this app builds no Docker image.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install (exactly what package-lock.json says)
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Tests
+        run: npm test -- --ci
+
+      - name: Expo doctor (SDK-compatible versions and config)
+        run: npm run doctor
+
+      - name: Bundle the app (production JS for Android, proves Metro can build it)
+        run: npx expo export --platform android --output-dir dist
