@@ -1,7 +1,7 @@
 import { QueryClient } from '@tanstack/query-core';
 import type { i18n } from 'i18next';
 
-import { SessionStore } from '@/features/auth';
+import { AuthStore } from '@/features/auth';
 import { createI18n, pickLanguage } from '@/lib/i18n';
 
 export type RootStoreDeps = {
@@ -17,17 +17,17 @@ export type RootStoreDeps = {
 export class RootStore {
   readonly i18n: i18n;
   readonly queryClient: QueryClient;
-  readonly session: SessionStore;
+  readonly auth: AuthStore;
 
   constructor(deps: RootStoreDeps) {
     this.i18n = createI18n(pickLanguage(deps.locales));
     this.queryClient = new QueryClient();
     this.queryClient.mount();
-    this.session = new SessionStore();
+    this.auth = new AuthStore();
   }
 
   dispose(): void {
-    this.session.dispose();
+    this.auth.dispose();
     this.queryClient.unmount();
     this.queryClient.clear();
   }

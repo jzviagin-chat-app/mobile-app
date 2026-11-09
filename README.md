@@ -90,12 +90,12 @@ Talking to a local auth-service (from step 2): run auth-service locally (its `co
 ```
 src/
   app/                    Routes only (Expo Router). Thin files: they re-export a feature's screen.
-    _layout.tsx           Root: config check, RootStore, providers, the logged-out/logged-in switch
+    _layout.tsx           Root: config check, RootStoreProvider, the logged-out/logged-in switch
     (auth)/               Logged-out routes. welcome.tsx → /welcome
     (app)/                Logged-in routes. index.tsx → /  (placeholder until step 2)
-  root/                   RootStore (creates and wires every store), StoreProvider + useStores(), MobX config
+  root/                   RootStore (creates and wires every store), RootStoreProvider + useStores(), MobX config
   features/
-    auth/                 Everything about login: SessionStore, screens. Public surface: index.ts
+    auth/                 Everything about login: AuthStore, screens. Public surface: index.ts
                           later: features/devices, features/chats, features/contacts, …
   lib/                    No UI, no stores: config (zod), i18n, log (masking), api/ (step 2)
                           later: lib/query (MobxQuery adapter, step 3)
@@ -117,15 +117,18 @@ Screens read **only MobX stores**. What's behind a store depends on where the da
 
 | Data | Lives in | Example |
 |---|---|---|
-| Client state | MobX store fields | `session.status`, later: connection state, drafts |
+| Client state | MobX store fields | `auth.status`, later: connection state, drafts |
 | Request/reply server data | TanStack Query's cache, exposed by a store through a `MobxQuery` (step 3) | devices list, profile, contacts |
 | Pushed data (phase 9) | MobX stores over SQLite + the WebSocket | chats, messages, typing, online |
 
 **Root store, no singletons.** `RootStore` (`src/root/`) creates the `QueryClient`, i18n and every store,
 and passes each store **only what it needs** through its constructor (the API client, token storage, another
-store), never the whole root, so features never import `root` (no import cycles). It's created once in
-the root layout and given to screens by `StoreProvider`; `useStores()` reads it. Tests build a fresh one with
-fakes, like building an Express app per test.
+store), never the whole root, so features never import `root` (no import cycles). `RootStoreProvider`
+(wrapped around the whole app by the root layout) creates **the one** `RootStore` on its first render
+(`useState`'s initializer runs once, so re-renders never make a second), restores the session, disposes it on
+unmount and gives it to screens; `useStores()` reads it. Tests render their own `RootStoreProvider` with fake
+dependencies (`deps={{ locales: … }}`, later the API client and token storage), so each test gets a fresh
+store, like building an Express app per test.
 
 **Stores** are plain classes: `makeAutoObservable(this, {}, { autoBind: true })` in the constructor (no
 decorators: MobX 7 supports only standard decorators, which would need extra Babel setup). Fields become
@@ -173,9 +176,9 @@ Expo Router: **every file under `src/app/` is a route**; `_layout.tsx` wraps its
 `(group)` folders group routes without adding to the URL. Navigate with `router.push('/…')` (typed: a typo
 is a type error).
 
-The root layout reads `session.status` (`loading` → `signedOut` / `signedIn`):
+The root layout reads `auth.status` (`loading` → `signedOut` / `signedIn`):
 - `loading`: the native splash screen stays up while the session is restored (later: tokens from secure storage).
-- `<Stack.Protected guard={session.isSignedIn}>` wraps `(app)`, `<Stack.Protected guard={!session.isSignedIn}>`
+- `<Stack.Protected guard={auth.isSignedIn}>` wraps `(app)`, `<Stack.Protected guard={!auth.isSignedIn}>`
   wraps `(auth)`. When the status changes the router switches groups and **removes the other group's history**,
   so "back" can't return to a logged-in screen after sign-out.
 
@@ -197,7 +200,7 @@ Designed now, built with the login:
 - **One place** (`src/lib/api/`): adds `Authorization: Bearer …`; turns every non-2xx into
   `ApiError { status, code, message }` (code branches on `code`, never on `message`); network failures get
   their own type. It never imports a store: `getAccessToken`, `refreshSession`, `onSessionEnded` are passed in.
-- **Refresh** (`SessionStore.refresh()`): one at a time (a shared promise), about a minute before the access
+- **Refresh** (`AuthStore.refresh()`): one at a time (a shared promise), about a minute before the access
   token expires and on `401 invalid_token` (then the request is retried once). The new tokens are saved to
   secure storage **before** they're used; a lost reply is retried with the same refresh token; replies to
   given-up requests are ignored. `401 invalid_refresh_token` → signed out (log in by SMS);
@@ -296,6 +299,11 @@ Later (recorded, not scheduled):
 - **Release build + over-the-air updates**: a release APK on the S22 and **expo-updates** with EAS Update
   (free plan: 1,000 monthly active users; needs a free Expo account): runtime-version policy, channel. Updates
   only reach release builds (development builds always load JS from Metro).
+- **App observability (debugging production)**: crash reports and JavaScript errors with stack traces, app
+  logs (masked, through `src/lib/log.ts`) and traces that continue into the backend (`traceparent` on API
+  calls, so one request is visible app → ingress → auth in Grafana). Free only; never tokens, codes or full
+  phone numbers. To decide then: our own Grafana stack (needs a public, rate-limited Alloy endpoint) or a
+  hosted crash reporter with a hard-capped free tier; native crash capture.
 - End-to-end UI tests (Maestro).
 - Phase 9 client: WebSocket (`src/realtime/`), SQLite inbox with cursor and cumulative acks (`src/data/`).
 - Push notifications (`expo-notifications`; iOS needs the paid Apple account), device keypair for E2E

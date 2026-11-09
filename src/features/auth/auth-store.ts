@@ -1,6 +1,6 @@
 import { flow, makeAutoObservable } from 'mobx';
 
-export type SessionStatus = 'loading' | 'signedOut' | 'signedIn';
+export type AuthStatus = 'loading' | 'signedOut' | 'signedIn';
 
 /**
  * Who is logged in on this phone. The root layout shows the (auth) or (app) routes from `status`.
@@ -8,8 +8,8 @@ export type SessionStatus = 'loading' | 'signedOut' | 'signedIn';
  * Skeleton: there is no login yet, so restore() always ends signed out. Step 2 adds completeLogin(tokens)
  * (save to secure storage first, then sign in); step 3 adds refresh() (one at a time) and signOut().
  */
-export class SessionStore {
-  status: SessionStatus = 'loading';
+export class AuthStore {
+  status: AuthStatus = 'loading';
 
   constructor() {
     makeAutoObservable(this, {}, { autoBind: true });
@@ -20,7 +20,7 @@ export class SessionStore {
   }
 
   /** Called once at startup. Later: read the stored tokens from secure storage. */
-  restore = flow(function* (this: SessionStore) {
+  restore = flow(function* (this: AuthStore) {
     yield Promise.resolve(); // later: tokens = yield root.tokenStorage.load()
     this.status = 'signedOut';
   });
