@@ -7,8 +7,9 @@ GitHub org `jzviagin-chat-app`; the system design (services, contracts, phases) 
 **This is the real app, not a throwaway demo.** It starts with only the login flow, but its structure is the
 foundation for everything that comes later (chats over WebSocket, local message store, media, push, E2E).
 
-> **Status: skeleton (phase 8 step 1).** Boots to an empty "logged out" screen in Hebrew or English,
-> light or dark, following the phone. Lint, types, tests and CI in place. Next: login (step 2).
+> **Status: login (phase 8 step 2).** Sign in by SMS code (phone → code → display name for a new number),
+> stay signed in across restarts, sign out. Hebrew or English, light or dark, following the phone.
+> Next: the session (step 3: token refresh, the devices screen).
 
 ---
 
@@ -81,26 +82,40 @@ with the dev client, installs it and starts **Metro**, the dev server the app lo
 time, if no native package or `app.config.ts` setting changed, just `npm start` and open the app: it
 reconnects to Metro. Rebuild (`npm run android`) after adding a native package or changing `app.config.ts`.
 
-Talking to a local auth-service (from step 2): run auth-service locally (its `compose.yaml` + uvicorn, with
-`ENVIRONMENT=dev`: fake SMS sender, codes appear in its log, ₪0) and, with the S22 on USB:
-`adb reverse tcp:8000 tcp:8000`, so the phone's `localhost:8000` reaches the Mac (see §9).
+**Talking to a local auth-service** (how the login is developed; ₪0): run auth-service on the Mac with
+`ENVIRONMENT=dev`, so its fake SMS sender writes each code to its log instead of sending an SMS:
+```bash
+# (Mac) one-time setup: auth-service README §12 (uv sync, cp .env.example .env)
+cd ~/code/auth-service                     # your auth-service checkout, on main
+docker compose up -d                       # local Postgres + Redis
+uv run alembic upgrade head
+ENVIRONMENT=dev uv run uvicorn auth_service.main:app --reload   # :8000; codes appear in this log
+```
+Then, with the S22 on USB: `adb reverse tcp:8000 tcp:8000`, so the phone's `localhost:8000` reaches the Mac
+(see §9). Against production (real SMS, prepaid credits) only for a final check: set `EXPO_PUBLIC_API_URL`
+in `.env.development.local`.
 
 ## 4. Project layout
 
 ```
 src/
-  app/                    Routes only (Expo Router). Thin files: they re-export a feature's screen.
-    _layout.tsx           Root: config check, RootStoreProvider, the logged-out/logged-in switch
-    (auth)/               Logged-out routes. welcome.tsx → /welcome
-    (app)/                Logged-in routes. index.tsx → /  (placeholder until step 2)
-  root/                   RootStore (creates and wires every store), RootStoreProvider + useRootStore(), MobX config
+  app/                    Routes only (Expo Router). Thin files: they pick the stores a screen needs.
+    _layout.tsx           Root: config check, RootStoreProvider, RootNavigator
+    auth.tsx              /auth → the login (all its steps)
+    (app)/                Logged-in routes. index.tsx → /  (placeholder home with "Sign out")
+  root/                   RootStore (creates and wires every store), RootStoreProvider + useRootStore(),
+                          RootNavigator (signed in ⇄ signed out), test-deps (fakes for tests), MobX config
   features/
-    auth/                 Everything about login: AuthStore, screens. Public surface: index.ts
+    auth/                 Login: AuthStore (session), LoginFlowStore (the login state machine), phone
+                          numbers, countries, screens. Public surface: index.ts
+    home/                 The placeholder home screen
                           later: features/devices, features/chats, features/contacts, …
-  lib/                    No UI, no stores: config (zod), i18n, log (masking), api/ (step 2)
+  lib/                    No UI, no stores: config (zod), i18n, log (masking), api/ (auth-service client),
+                          secure-item + token-storage (secure storage), fresh-install, device, clock
                           later: lib/query (MobxQuery adapter, step 3)
-  ui/                     Theme tokens + shared components (Screen, Text; later Button, TextField)
+  ui/                     Theme tokens + shared components (Screen, Text, Button, TextField, OtpInput)
 locales/                  he.json, en.json (same keys; typed)
+scripts/                  Dev scripts run on the Mac (api-gen, gen-country-names)
 assets/                   Icons and splash image
 app.config.ts             Native config (name, ids, plugins); changing it needs a new native build
 ```
@@ -123,12 +138,14 @@ Screens read **only MobX stores**. What's behind a store depends on where the da
 
 **Root store, no singletons.** `RootStore` (`src/root/`) creates the `QueryClient`, i18n and every store,
 and passes each store **only what it needs** through its constructor (the API client, token storage, another
-store), never the whole root, so features never import `root` (no import cycles). `RootStoreProvider`
-(wrapped around the whole app by the root layout) creates **the one** `RootStore` on its first render
-(`useState`'s initializer runs once, so re-renders never make a second), restores the session, disposes it on
-unmount and gives it to screens; `useRootStore()` reads it. Tests render their own `RootStoreProvider` with fake
-dependencies (`deps={{ locales: … }}`, later the API client and token storage), so each test gets a fresh
-store, like building an Express app per test.
+store's action), never the whole root, so features never import `root` (no import cycles). Its dependencies
+(`RootStoreDeps`: the phone's languages, the API client, token and login-progress storage, the device, a clock,
+the fresh-install check) come in through its constructor. `RootStoreProvider` (wrapped around the whole app by
+the root layout) builds the real ones and creates **the one** `RootStore` on its first render (`useState`'s
+initializer runs once, so re-renders never make a second), restores the saved session and login progress
+(`root.restore()`, no requests), disposes it on unmount and gives it to screens; `useRootStore()` reads it.
+Tests pass fakes instead (`deps={testDeps(...)}` from `src/root/test-deps.ts`: a fake API of `jest.fn`s,
+in-memory storage), so each test gets a fresh store, like building an Express app per test.
 
 **Stores** are plain classes: `makeAutoObservable(this, {}, { autoBind: true })` in the constructor (no
 decorators: MobX 7 supports only standard decorators, which would need extra Babel setup). Fields become
@@ -176,11 +193,24 @@ Expo Router: **every file under `src/app/` is a route**; `_layout.tsx` wraps its
 `(group)` folders group routes without adding to the URL. Navigate with `router.push('/…')` (typed: a typo
 is a type error).
 
-The root layout reads `auth.status` (`loading` → `signedOut` / `signedIn`):
-- `loading`: the native splash screen stays up while the session is restored (later: tokens from secure storage).
-- `<Stack.Protected guard={auth.isSignedIn}>` wraps `(app)`, `<Stack.Protected guard={!auth.isSignedIn}>`
-  wraps `(auth)`. When the status changes the router switches groups and **removes the other group's history**,
-  so "back" can't return to a logged-in screen after sign-out.
+Two sides, switched by the session (`src/root/RootNavigator.tsx`):
+```tsx
+<Stack.Protected guard={auth.isSignedIn} redirectTo="/auth">  <Stack.Screen name="(app)" />  </Stack.Protected>
+<Stack.Protected guard={!auth.isSignedIn} redirectTo="/">     <Stack.Screen name="auth" />   </Stack.Protected>
+```
+- `auth.status` is `loading` until secure storage has been read once: the native splash screen stays up
+  meanwhile, so no login screen flashes past when you're already signed in.
+- A guard only switches screens on or off; it never gives a screen another address. `redirectTo` says where
+  a blocked screen sends you: the app always starts at `/` (`(app)/index`), so a signed-out start goes to
+  `/auth`, and a signed-in start at `/auth` (a link) goes to `/`.
+- When the session changes, the router switches sides and **removes the other side's history**, so back
+  can't return to the login after signing in, or to a logged-in screen after signing out.
+
+**The login is one route with a state machine.** `/auth` shows `LoginScreen`, which renders the step held
+by `LoginFlowStore.step` (`phone` → `code` → `name`). Separate routes would let Android's back button pop a
+screen while the store still says "code requested"; with one route the store is the only truth. Back (the
+Android button via `BackHandler`, or "Change number") calls `login.back()`; on the first step the back
+button leaves the app as usual. Steps slide in with a short animation done by hand.
 
 **Lazy loading.** On a phone the whole JS bundle (Hermes bytecode) is already in the app; what matters is
 that a screen's code doesn't *run* before it's needed. Expo Router gives each route to React Navigation as
@@ -190,31 +220,86 @@ renders; only then is the route file evaluated, and Metro evaluates a module (an
 Expo Router loads every route once at startup to warn about missing default exports.) Keep route files thin
 anyway: re-export a feature screen.
 
-## 7. API client and tokens (steps 2–3)
+## 7. API client, tokens and the login
 
-Designed now, built with the login:
+**API client** (`src/lib/api/`, built in step 2):
 - **Types** from auth-service's OpenAPI schema with `openapi-typescript` (the schema exists only when
   auth-service runs locally with `ENVIRONMENT=dev`): `npm run api:gen` fetches it; the JSON snapshot and the
-  generated types are committed, so CI never needs the server. Calls go through `openapi-fetch` (typed paths,
-  bodies, responses). Error codes are a hand-written union from auth-service's README.
-- **One place** (`src/lib/api/`): adds `Authorization: Bearer …`; turns every non-2xx into
-  `ApiError { status, code, message }` (code branches on `code`, never on `message`); network failures get
-  their own type. It never imports a store: `getAccessToken`, `refreshSession`, `onSessionEnded` are passed in.
-- **Refresh** (`AuthStore.refresh()`): one at a time (a shared promise), about a minute before the access
-  token expires and on `401 invalid_token` (then the request is retried once). The new tokens are saved to
-  secure storage **before** they're used; a lost reply is retried with the same refresh token; replies to
-  given-up requests are ignored. `401 invalid_refresh_token` → signed out (log in by SMS);
-  `403 account_blocked` → signed out with a message; `403 action_not_allowed` → an error on that screen.
-- **Login flow:** `otp/request {phone}` → SMS code → `otp/verify {phone, code, device}` → tokens, or a
-  registration token (kept **in memory only**) → `register {registration_token, display_name, device}` →
-  tokens. Platform `ios`/`android`. A new SMS login signs the previous phone out (one primary device).
-- **Token storage:** `expo-secure-store`, one JSON item `{access, refresh, accessExpiresAt}` (one write keeps
-  them consistent), `AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY` (not restored to another phone; readable for
-  background work after the first unlock). The iOS Keychain survives uninstalling the app, so the first
-  launch after an install wipes it: a reinstall starts logged out, as the server treats it as a new device.
-- **Phone input:** `libphonenumber-js` turns what's typed (`050-123-4567`, `+972 50 …`) into E.164, then the
-  exact server rule `^\+9725\d{8}$` (Israeli mobiles). SMS-code field: `textContentType="oneTimeCode"` (iOS),
-  `autoComplete="sms-otp"` (Android) for autofill.
+  generated types are committed, so CI never needs the server. `openapi-typescript` runs through `npx` at a
+  pinned version (it declares a TypeScript 5 peer; the generated file works with TypeScript 6).
+- Calls go through `openapi-fetch` (typed paths, bodies, responses), with a 15 s timeout. Every call returns
+  the success body or throws **`ApiError { status, code, retryAfterSeconds }`** (code branches on `code`,
+  never on the server's message) or **`NetworkError`** (`offline` / `timeout`). Error codes are a
+  hand-written union from auth-service's README. It never logs bodies or headers.
+
+**Tokens** (`src/lib/token-storage.ts`): `expo-secure-store`, one JSON item `{access, refresh,
+accessExpiresAt}` (one write keeps them consistent), `AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY` (not restored to
+another phone, not in backups; readable for background work after the first unlock).
+- `accessExpiresAt` = time of receipt + `expires_in`, on the **phone's own clock** (not the JWT's `exp`, which
+  is server time): a wrong phone clock doesn't matter.
+- **Signed in = we hold tokens** (`AuthStore.isSignedIn` is computed from them). **Auto login sends no
+  request**: saved tokens mean signed in, also offline.
+- The iOS Keychain survives uninstalling the app, so the first launch after an install
+  (`src/lib/fresh-install.ts`: a marker file in the app's documents folder, which is deleted with the app)
+  wipes the saved tokens and login progress.
+- **Sign out** clears the tokens on the phone at once, then sends `POST /auth/logout` without waiting. If that
+  fails (offline; or 401 for an expired access token until refresh exists), the device stays active on the
+  server until the next SMS login replaces it.
+
+**Refresh (decided 2026-11-09, built in step 3):**
+- Before each logged-in request the API client awaits `getAccessToken()` (= `auth.freshAccessToken()`):
+  if the access token expires within 60 s, it refreshes first.
+- On `401 invalid_token` (a wrong clock, a revoked device, a rotated key): refresh once, retry the request
+  once; if the token already changed meanwhile, just retry with the new one.
+- **One refresh at a time:** a shared `refreshPromise`; logged-in requests wait on it, unauthenticated ones
+  never do.
+- Outcomes: success → **save the new tokens first, then use them**; a lost reply → retry with the same
+  refresh token (auth-service allows it); offline → keep the tokens, fail the request with "no connection",
+  **never sign out**; `401 invalid_refresh_token` → signed out; `403 account_blocked` → signed out with a
+  message; `403 action_not_allowed` → an error on that screen.
+- No timer for normal calls (timers stop while the phone sleeps the app anyway). Phase 9 adds a socket-only
+  timer: an open WebSocket sends a fresh `auth` message before the token expires.
+- The API client receives `getAccessToken` and `onUnauthorized`; it never imports a store.
+
+**The login** (`LoginFlowStore`, a state machine; actions return `{ok}` / `{ok:false, error}`, never throw):
+```
+phone ──requestCode──► code ──verify: logged_in──────────────► signed in
+  ▲                     │   └─verify: registration_required──► name ──register──► signed in
+  └────── back() ───────┴──────────────────────────────── back() deletes the registration token
+```
+- `otp/request {phone}` → SMS → `otp/verify {phone, code, device}` → tokens, or a registration token (10
+  min) → `register {registration_token, display_name, device}` → tokens. `device` = platform + the phone's
+  name (`expo-device`: the name from the phone's settings on Android; the model on iOS, where the name is just
+  "iPhone" without a special entitlement). A new SMS login signs the previous phone out (one primary device).
+- **Per-number timers:** going back and entering the same number while its code is valid goes straight to
+  the code step with the countdown still running (no new SMS); a different number sends a new one.
+- **The progress survives closing the app:** `{country, step, phone, timers, registration token}` is saved in
+  its own secure-store item after every change and restored at startup, resuming the code / name step while
+  the code / registration token is still valid. Without it a restart would cost a new SMS or hit the 60 s
+  cooldown (`429`). The registration token is deleted on use, expiry, back and sign-in.
+- **A `429` without saved progress** (reinstall, another phone): `Retry-After` ≤ 60 s means a code was just
+  sent, so the app goes to the code step anyway ("a code was already sent"); longer means the hourly / daily
+  limit ("try again in N min").
+- `code_expired` → back to the phone step with a notice; `login_conflict` → retried once automatically;
+  `invalid_registration_token` / `already_registered` → phone step with a notice.
+
+**Phone numbers** (`features/auth/phone.ts`, `countries.ts`):
+- A searchable **country picker** (name in Hebrew or English, ISO code, calling code). Hard-coded lists:
+  `SELECTABLE_COUNTRIES` (IL, US, GB, DE, FR, ES, CA: validated and formatted on the device) and
+  `SIGN_IN_COUNTRIES` (IL: what the server accepts, an SMS cost guard). A valid number of another selectable
+  country is blocked on the device ("not available yet"), without a request. Every other country is listed
+  but greyed out. When the server supports more countries, switch to a list from the server.
+- What's typed (`050-234-5678`, `0502345678`, a pasted `+972 50 …`) is formatted as you type and turned into
+  E.164 by `libphonenumber-js` (its `mobile` metadata, so landlines are rejected). **Israel uses the server's
+  exact rule `^\+9725\d{8}$`**: libphonenumber also knows which ranges are allocated and rejects e.g.
+  `050-1xx-xxxx`, which the server accepts; the device must never block what the server takes. The server
+  checks again and has the final say (`400 invalid_phone`).
+- Country names come from `country-names.json`, generated once with Node's `Intl.DisplayNames`
+  (`node scripts/gen-country-names.mjs`), so the app doesn't depend on Hermes supporting it.
+
+**The code field** (`ui/OtpInput.tsx`): **one hidden `TextInput`, drawn as 6 boxes**, so paste and the
+keyboard's SMS autofill (`textContentType="oneTimeCode"` on iOS, `autoComplete="sms-otp"` on Android) fill
+all six at once and backspace just works (six separate inputs break both). It submits by itself at 6 digits.
 
 ## 8. Language, right-to-left, light and dark
 
@@ -225,7 +310,7 @@ Designed now, built with the login:
   only **`start`/`end`** (`marginStart`, `paddingEnd`, `start: 0`), never `left`/`right`, and
   `textAlign: 'auto'`, so Hebrew mirrors correctly. Phone numbers and codes are always shown left-to-right.
 - **Texts** live in `locales/he.json` and `locales/en.json` (same keys, tested); keys are typed:
-  `t('auth.loggedOut.title')`, and a typo is a type error.
+  `t('auth.phone.title')`, and a typo is a type error.
 - **Light and dark:** `userInterfaceStyle: "automatic"`. Every colour is a token with a light and a dark value
   (`src/ui/theme.ts`); `useTheme()` follows the phone's setting and re-renders when it changes. Components
   never hard-code colours.
@@ -246,9 +331,12 @@ the app** (none are needed). `src/lib/config.ts` is the only reader of `process.
 startup (fails fast, like pydantic-settings).
 
 ## 10. Rules
-- **Never log or display tokens, SMS codes or full phone numbers.** Use `log` from `src/lib/log.ts`
-  (`console` is a lint error elsewhere); it masks phone numbers (`+97250***4567`) and token-like strings as a
-  safety net. Tokens only in secure storage; the registration token only in memory.
+- **Never log tokens, SMS codes or phone numbers, and never display tokens or other people's full
+  numbers.** The user's own number may be shown to them (the code step: "sent to 050-234-5678", so a typo is
+  easy to spot). Use `log` from `src/lib/log.ts` (`console` is a lint error elsewhere); it masks phone numbers
+  (`+97250***4567`) and token-like strings as a safety net.
+- Tokens and the login progress only in secure storage (this device only). The registration token is
+  deleted on use, expiry, back and sign-in.
 - Native packages only via `npx expo install`; never edit `ios/` or `android/` (generated).
 - Styles: `start`/`end`, never `left`/`right`; colours only from the theme.
 - Routes are thin; logic lives in features; features talk through their `index.ts`.
@@ -276,6 +364,7 @@ npm ci                       # install exactly what package-lock.json says (≈ 
 | Dependency + config health | `npm run doctor` | – |
 | Add a package | `npx expo install <pkg>` (dev: `npx expo install -- --save-dev <pkg>`) | `npm i` |
 | Production JS bundle (what CI checks) | `npx expo export --platform android` | `vite build` |
+| Refresh auth-service's API types (local auth-service running) | `npm run api:gen` | – |
 
 CI (`.github/workflows/ci.yml`, job **`check`**) runs lint, format check, type check, tests, `expo-doctor`
 and a production bundle on every pull request and again on `main` after each merge.
@@ -288,11 +377,13 @@ against React Native Directory and fails the build. Exclude only Expo-owned tran
 ## 12. Build plan
 Each step is agreed with the owner, built on a branch and merged before the next (chat-infra `PLAN.md` phase 8).
 
-1. 🔨 **Design + skeleton**: this README, tooling, CI; the app boots to an empty logged-out screen.
-2. **Login**: phone → SMS code (`otp/request`, `otp/verify`) → display name for a new number (`register`) →
-   tokens in secure storage. API client + generated types.
-3. **Session**: refresh before expiry (one at a time), sign-out on `invalid_token` / `invalid_refresh_token`,
-   logout, the devices screen (primary only); the `MobxQuery` adapter.
+1. ✅ **Design + skeleton**: this README, tooling, CI; the app boots to an empty logged-out screen.
+2. 🔨 **Login**: phone → SMS code (`otp/request`, `otp/verify`) → display name for a new number (`register`) →
+   tokens in secure storage; **sign-out** (moved here from step 3, to test the login repeatedly). API client
+   + generated types, country picker, login progress that survives a restart.
+3. **Session**: refresh (§7: before a request + on 401, one at a time), sign-out on `invalid_refresh_token`,
+   the devices screen (primary only); the `MobxQuery` adapter and TanStack's focus / online wiring for
+   React Native (`focusManager` ← `AppState`, `onlineManager` ← network status).
 4. **End-to-end check**: one login traced app → ingress → auth → Postgres in Grafana.
 
 Later (recorded, not scheduled):
@@ -305,6 +396,10 @@ Later (recorded, not scheduled):
   phone numbers. To decide then: our own Grafana stack (needs a public, rate-limited Alloy endpoint) or a
   hosted crash reporter with a hard-capped free tier; native crash capture.
 - End-to-end UI tests (Maestro).
+- **Reading the SMS code automatically on Android** (Google's SMS User Consent API: a system prompt, no
+  change to the SMS text; needs a native module: check for a maintained package first).
+- **International numbers:** the server and an SMS provider for those countries first, then serve the
+  country list from the server instead of `SELECTABLE_COUNTRIES` / `SIGN_IN_COUNTRIES`.
 - Phase 9 client: WebSocket (`src/realtime/`), SQLite inbox with cursor and cumulative acks (`src/data/`).
 - Push notifications (`expo-notifications`; iOS needs the paid Apple account), device keypair for E2E
   (native crypto, private key in secure storage), QR device linking (`expo-camera`).
