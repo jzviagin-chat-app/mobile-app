@@ -33,8 +33,8 @@ export function RootStoreProvider({ deps, children }: Props) {
 }
 
 /** The root store (use inside `observer` components so reads re-render on change). */
-export function useStores(): RootStore {
+export function useRootStore(): RootStore {
   const store = useContext(RootStoreContext);
-  if (!store) throw new Error('useStores() must be used inside <RootStoreProvider>');
+  if (!store) throw new Error('useRootStore() must be used inside <RootStoreProvider>');
   return store;
 }

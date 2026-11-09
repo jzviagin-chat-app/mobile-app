@@ -3,12 +3,12 @@ import { observer } from 'mobx-react-lite';
 import { Text } from 'react-native';
 
 import type { RootStore } from './root-store';
-import { RootStoreProvider, useStores } from './RootStoreProvider';
+import { RootStoreProvider, useRootStore } from './RootStoreProvider';
 
 /** Records every store it sees and shows the session status. */
 function makeProbe(seen: RootStore[]) {
   return observer(function Probe() {
-    const store = useStores();
+    const store = useRootStore();
     seen.push(store);
     return <Text>{store.auth.status}</Text>;
   });
@@ -59,8 +59,8 @@ describe('RootStoreProvider', () => {
     expect(dispose).toHaveBeenCalledTimes(1);
   });
 
-  it('useStores() outside the provider fails loudly', async () => {
+  it('useRootStore() outside the provider fails loudly', async () => {
     jest.spyOn(console, 'error').mockImplementation(() => {}); // React logs the thrown render error
-    await expect(renderHook(() => useStores())).rejects.toThrow('inside <RootStoreProvider>');
+    await expect(renderHook(() => useRootStore())).rejects.toThrow('inside <RootStoreProvider>');
   });
 });

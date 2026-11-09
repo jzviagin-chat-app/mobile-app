@@ -7,7 +7,7 @@ import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 
 import { getConfig } from '@/lib/config';
-import { RootStoreProvider, useStores } from '@/root';
+import { RootStoreProvider, useRootStore } from '@/root';
 import { useTheme } from '@/ui';
 
 // Keep the native splash screen up until we know whether someone is logged in.
@@ -25,7 +25,7 @@ export default function RootLayout() {
 
 /** Shows the (auth) or the (app) routes depending on the session; history is cleared on every switch. */
 const RootNavigator = observer(function RootNavigator() {
-  const { auth } = useStores();
+  const { auth } = useRootStore();
   const theme = useTheme();
   const ready = auth.status !== 'loading';
 

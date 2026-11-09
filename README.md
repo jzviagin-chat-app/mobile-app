@@ -93,7 +93,7 @@ src/
     _layout.tsx           Root: config check, RootStoreProvider, the logged-out/logged-in switch
     (auth)/               Logged-out routes. welcome.tsx → /welcome
     (app)/                Logged-in routes. index.tsx → /  (placeholder until step 2)
-  root/                   RootStore (creates and wires every store), RootStoreProvider + useStores(), MobX config
+  root/                   RootStore (creates and wires every store), RootStoreProvider + useRootStore(), MobX config
   features/
     auth/                 Everything about login: AuthStore, screens. Public surface: index.ts
                           later: features/devices, features/chats, features/contacts, …
@@ -126,7 +126,7 @@ and passes each store **only what it needs** through its constructor (the API cl
 store), never the whole root, so features never import `root` (no import cycles). `RootStoreProvider`
 (wrapped around the whole app by the root layout) creates **the one** `RootStore` on its first render
 (`useState`'s initializer runs once, so re-renders never make a second), restores the session, disposes it on
-unmount and gives it to screens; `useStores()` reads it. Tests render their own `RootStoreProvider` with fake
+unmount and gives it to screens; `useRootStore()` reads it. Tests render their own `RootStoreProvider` with fake
 dependencies (`deps={{ locales: … }}`, later the API client and token storage), so each test gets a fresh
 store, like building an Express app per test.
 
