@@ -1,8 +1,6 @@
 import { observer } from 'mobx-react-lite';
-import { useEffect, useRef } from 'react';
-import { Animated, BackHandler, StyleSheet } from 'react-native';
-
-import { Screen, spacing } from '@/ui';
+import { useEffect } from 'react';
+import { BackHandler } from 'react-native';
 
 import type { LoginFlowStore } from '../login-flow-store';
 import { CodeStep } from './CodeStep';
@@ -22,42 +20,16 @@ export const LoginScreen = observer(function LoginScreen({ login }: Props) {
   useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
       if (login.step === 'phone') return false; // default: leave the app
+      // Handled either way: on the code step back waits for the countdown (login.back() ignores it).
       void login.back();
       return true;
     });
     return () => subscription.remove();
   }, [login]);
 
-  // A short slide-in whenever the step changes (the router would animate separate screens; one route
-  // animates its steps itself).
-  const appear = useRef(new Animated.Value(1)).current;
-  useEffect(() => {
-    appear.setValue(0);
-    Animated.timing(appear, { toValue: 1, duration: 180, useNativeDriver: true }).start();
-  }, [step, appear]);
-
-  return (
-    <Screen>
-      <Animated.View
-        key={step}
-        style={[
-          styles.fill,
-          {
-            opacity: appear,
-            transform: [
-              { translateY: appear.interpolate({ inputRange: [0, 1], outputRange: [16, 0] }) },
-            ],
-          },
-        ]}
-      >
-        {step === 'phone' ? <PhoneStep login={login} /> : null}
-        {step === 'code' ? <CodeStep login={login} /> : null}
-        {step === 'name' ? <NameStep login={login} /> : null}
-      </Animated.View>
-    </Screen>
-  );
-});
-
-const styles = StyleSheet.create({
-  fill: { flex: 1, gap: spacing.md },
+  // No transition animation between steps: a fade that starts invisible could leave a step blank for
+  // seconds on a busy phone (seen on the emulator).
+  if (step === 'code') return <CodeStep login={login} />;
+  if (step === 'name') return <NameStep login={login} />;
+  return <PhoneStep login={login} />;
 });

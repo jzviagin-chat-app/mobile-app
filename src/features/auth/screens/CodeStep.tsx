@@ -2,7 +2,7 @@ import { observer } from 'mobx-react-lite';
 import { startTransition, useActionState, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { Button, OtpInput, Text } from '@/ui';
+import { Button, OtpInput, Screen, Text } from '@/ui';
 
 import type { LoginResult } from '../errors';
 import type { LoginFlowStore } from '../login-flow-store';
@@ -33,7 +33,32 @@ export const CodeStep = observer(function CodeStep({ login }: { login: LoginFlow
   const wait = login.secondsUntilResend; // ticks every second while shown
 
   return (
-    <>
+    <Screen
+      footer={
+        <>
+          <Button
+            testID="code-resend"
+            variant="secondary"
+            title={
+              wait > 0
+                ? t('auth.code.resendIn', { time: formatDuration(wait) })
+                : t('auth.code.resend')
+            }
+            disabled={wait > 0 || verifying}
+            loading={resending}
+            onPress={() => startTransition(() => resend())}
+          />
+          {/* Waits for the same countdown as resend (owner decision 2026-11-10). */}
+          <Button
+            testID="code-change-number"
+            variant="secondary"
+            title={t('auth.code.changeNumber')}
+            disabled={!login.canGoBack || verifying}
+            onPress={() => void login.back()}
+          />
+        </>
+      }
+    >
       <Text variant="title" accessibilityRole="header">
         {t('auth.code.title')}
       </Text>
@@ -48,32 +73,14 @@ export const CodeStep = observer(function CodeStep({ login }: { login: LoginFlow
         value={code}
         onChange={setCode}
         onComplete={(entered) => startTransition(() => verify(entered))}
-        editable={!verifying}
+        busy={verifying}
         error={!!error}
-        autoFocus
       />
       {error ? (
         <Text accessibilityLiveRegion="polite" testID="code-error">
           {error}
         </Text>
       ) : null}
-      <Button
-        testID="code-resend"
-        variant="secondary"
-        title={
-          wait > 0 ? t('auth.code.resendIn', { time: formatDuration(wait) }) : t('auth.code.resend')
-        }
-        disabled={wait > 0 || verifying}
-        loading={resending}
-        onPress={() => startTransition(() => resend())}
-      />
-      <Button
-        testID="code-change-number"
-        variant="secondary"
-        title={t('auth.code.changeNumber')}
-        disabled={verifying}
-        onPress={() => void login.back()}
-      />
-    </>
+    </Screen>
   );
 });

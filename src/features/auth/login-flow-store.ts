@@ -1,4 +1,4 @@
-import { flow, makeAutoObservable, observable, type ObservableMap } from 'mobx';
+import { flow, makeAutoObservable } from 'mobx';
 
 import { ApiError, type AuthApi, type DeviceIn, type LoggedIn } from '@/lib/api';
 import type { Clock } from '@/lib/clock';
@@ -7,7 +7,7 @@ import { tokensFromReply, type StoredTokens } from '@/lib/token-storage';
 
 import { canSignIn, DEFAULT_COUNTRY } from './countries';
 import { fail, ok, toLoginError, type LoginResult } from './errors';
-import type { CodeTimers, LoginProgress, LoginProgressStorage } from './login-progress';
+import type { LoginProgress, LoginProgressStorage } from './login-progress';
 import { toE164, type CountryCode } from './phone';
 
 export type LoginStep = 'phone' | 'code' | 'name';
@@ -36,18 +36,25 @@ const NAME_MAX = 50;
  *
  *   phone ──requestCode──► code ──verify: logged_in──────────────► signed in (reset)
  *     ▲                     │   └─verify: registration_required──► name ──register──► signed in
- *     └────── back() ───────┴────────────────────────────────────────┘ back() drops the token
+ *     └────── back() ───────┴──────────────────────────────── back() ┘   (back = reset: all cleared)
  *
- * Every action returns a LoginResult and never throws. The progress is saved after each change, so
- * closing the app resumes where it was (no new SMS, no surprise 429).
+ * Rules (owner, 2026-11-09/10):
+ * - Back to the phone step clears everything, in memory and in storage; the phone step is never saved.
+ * - On the code step, back ("Change number", Android back) waits for the same countdown as "Send a new
+ *   code".
+ * - The code and name steps are saved after every change, so closing the app resumes there (no new SMS,
+ *   no surprise 429) while the code / registration token is still valid.
+ *
+ * Every action returns a LoginResult and never throws.
  */
 export class LoginFlowStore {
   country: CountryCode = DEFAULT_COUNTRY;
   step: LoginStep = 'phone';
   /** E.164, once a code was requested for it. */
   phone: string | null = null;
-  /** Per number, so going back and re-entering the same number keeps its countdown. */
-  readonly codes: ObservableMap<string, CodeTimers> = observable.map();
+  /** Unix ms (phone clock): when "Send a new code" / "Change number" become available. */
+  resendAvailableAt: number | null = null;
+  codeExpiresAt: number | null = null;
   registrationToken: string | null = null;
   registrationExpiresAt: number | null = null;
   notice: LoginNotice | null = null;
@@ -59,34 +66,28 @@ export class LoginFlowStore {
     makeAutoObservable<this, 'deps'>(this, { deps: false }, { autoBind: true });
   }
 
-  private get now(): number {
-    return this.deps.clock.now;
+  /** Seconds until a new code may be requested (ticks every second while a screen shows it). */
+  get secondsUntilResend(): number {
+    if (this.resendAvailableAt === null) return 0;
+    return Math.max(0, Math.ceil((this.resendAvailableAt - this.deps.clock.now) / 1000));
   }
 
-  /** Seconds until a new code may be requested for the current number (ticks while shown). */
-  get secondsUntilResend(): number {
-    const timers = this.phone ? this.codes.get(this.phone) : undefined;
-    if (!timers) return 0;
-    return Math.max(0, Math.ceil((timers.resendAvailableAt - this.now) / 1000));
+  /** Back is allowed from the name step, and from the code step once the countdown is over. */
+  get canGoBack(): boolean {
+    if (this.step === 'name') return true;
+    return this.step === 'code' && this.secondsUntilResend === 0;
   }
 
   setCountry(country: CountryCode): void {
     this.country = country;
   }
 
-  /** Phone step → code step. Reuses a still-valid code for the same number instead of sending an SMS. */
+  /** Phone step → code step. */
   requestCode = flow(function* (this: LoginFlowStore, rawPhone: string) {
     const phone = toE164(this.country, rawPhone);
     if (!phone) return fail('invalid_phone');
     if (!canSignIn(this.country)) return fail('country_not_available'); // no request: server is IL-only
-
     this.notice = null;
-    const existing = this.codes.get(phone);
-    if (existing && existing.expiresAt > Date.now()) {
-      this.goToCode(phone);
-      yield this.save();
-      return ok;
-    }
     const result: LoginResult = yield this.sendCode(phone);
     return result;
   });
@@ -108,11 +109,13 @@ export class LoginFlowStore {
       try {
         const reply: Awaited<ReturnType<LoginFlowDeps['api']['verifyCode']>> =
           yield this.deps.api.verifyCode(phone, code, this.deps.device);
-        this.codes.delete(phone); // the code is used up either way
         if (reply.status === 'logged_in') {
           yield this.finish(reply);
           return ok;
         }
+        // The code is used up; the name step has no countdown.
+        this.resendAvailableAt = null;
+        this.codeExpiresAt = null;
         this.registrationToken = reply.registration_token;
         this.registrationExpiresAt = Date.now() + reply.expires_in * 1000;
         this.step = 'name';
@@ -123,9 +126,7 @@ export class LoginFlowStore {
         // Another login of this user won a race: the server asks to retry with the same code (once).
         if (error instanceof ApiError && error.code === 'login_conflict' && attempt === 1) continue;
         if (error instanceof ApiError && error.code === 'code_expired') {
-          this.codes.delete(phone);
-          this.backToPhone('code_expired');
-          yield this.save();
+          yield this.startOver('code_expired');
         }
         return toLoginError(error);
       }
@@ -138,7 +139,7 @@ export class LoginFlowStore {
     if (name.length < 1 || name.length > NAME_MAX) return fail('invalid_name');
     const token = this.registrationToken;
     if (!token || (this.registrationExpiresAt ?? 0) <= Date.now()) {
-      yield this.dropRegistration('registration_expired');
+      yield this.startOver('registration_expired');
       return fail('registration_expired');
     }
     try {
@@ -146,43 +147,42 @@ export class LoginFlowStore {
       yield this.finish(reply);
       return ok;
     } catch (error) {
-      if (
-        error instanceof ApiError &&
-        (error.code === 'invalid_registration_token' || error.code === 'already_registered')
-      ) {
-        const notice =
-          error.code === 'already_registered' ? 'already_registered' : 'registration_expired';
-        yield this.dropRegistration(notice);
+      if (error instanceof ApiError && error.code === 'invalid_registration_token') {
+        yield this.startOver('registration_expired');
+      } else if (error instanceof ApiError && error.code === 'already_registered') {
+        yield this.startOver('already_registered');
       }
       return toLoginError(error);
     }
   });
 
-  /** Back (Android back button, "Change number"): code → phone keeps the number's timers; name → phone
-   * deletes the registration token. */
+  /**
+   * Back to the phone step ("Change number", Android back): clears everything. Ignored on the code step
+   * while the countdown runs.
+   */
   back = flow(function* (this: LoginFlowStore) {
-    if (this.step === 'phone') return;
-    if (this.step === 'name') {
-      this.registrationToken = null;
-      this.registrationExpiresAt = null;
-    }
-    this.backToPhone(null);
-    yield this.save();
+    if (!this.canGoBack) return;
+    yield this.reset();
   });
 
-  /** Back to an empty flow and nothing saved (after sign-in). */
+  /** An empty flow and nothing saved (after back and after sign-in). */
   reset = flow(function* (this: LoginFlowStore) {
     this.country = DEFAULT_COUNTRY;
     this.step = 'phone';
     this.phone = null;
-    this.codes.clear();
+    this.resendAvailableAt = null;
+    this.codeExpiresAt = null;
     this.registrationToken = null;
     this.registrationExpiresAt = null;
     this.notice = null;
-    yield this.deps.progress.clear();
+    try {
+      yield this.deps.progress.clear();
+    } catch {
+      log.warn('Could not clear the login progress');
+    }
   });
 
-  /** At startup: resume a saved login if its code / registration token is still valid. */
+  /** At startup: resume a saved code / name step while its code / registration token is still valid. */
   restore = flow(function* (this: LoginFlowStore) {
     let saved: LoginProgress | null = null;
     try {
@@ -192,37 +192,37 @@ export class LoginFlowStore {
     }
     if (!saved) return;
     const now = Date.now();
+    const codeValid = saved.step === 'code' && (saved.codeExpiresAt ?? 0) > now;
+    const nameValid =
+      saved.step === 'name' &&
+      saved.registrationToken !== null &&
+      (saved.registrationExpiresAt ?? 0) > now;
+    if (!codeValid && !nameValid) {
+      yield this.reset();
+      return;
+    }
     this.country = saved.country as CountryCode;
+    this.step = saved.step;
     this.phone = saved.phone;
-    for (const [phone, timers] of Object.entries(saved.codes)) {
-      if (timers.expiresAt > now || timers.resendAvailableAt > now) this.codes.set(phone, timers);
-    }
-    const codeValid = !!saved.phone && (saved.codes[saved.phone]?.expiresAt ?? 0) > now;
-    const tokenValid = !!saved.registrationToken && (saved.registrationExpiresAt ?? 0) > now;
-    if (saved.step === 'name' && tokenValid) {
-      this.registrationToken = saved.registrationToken;
-      this.registrationExpiresAt = saved.registrationExpiresAt;
-      this.step = 'name';
-    } else if (saved.step === 'code' && codeValid) {
-      this.step = 'code';
-    } else {
-      this.step = 'phone';
-    }
-    yield this.save(); // writes back without the expired parts
+    this.resendAvailableAt = saved.resendAvailableAt;
+    this.codeExpiresAt = saved.codeExpiresAt;
+    this.registrationToken = saved.registrationToken;
+    this.registrationExpiresAt = saved.registrationExpiresAt;
   });
 
   // ---- internals ----
 
   private sendCode = flow(function* (this: LoginFlowStore, phone: string) {
     const now = Date.now();
+    const wasOnCode = this.step === 'code';
     try {
       const sent: Awaited<ReturnType<LoginFlowDeps['api']['requestCode']>> =
         yield this.deps.api.requestCode(phone);
-      this.codes.set(phone, {
-        resendAvailableAt: now + sent.resend_after_seconds * 1000,
-        expiresAt: now + sent.expires_in_seconds * 1000,
-      });
-      this.goToCode(phone);
+      this.toCode(
+        phone,
+        now + sent.resend_after_seconds * 1000,
+        now + sent.expires_in_seconds * 1000,
+      );
       yield this.save();
       return ok;
     } catch (error) {
@@ -230,13 +230,11 @@ export class LoginFlowStore {
         const wait = error.retryAfterSeconds ?? COOLDOWN_SECONDS;
         if (wait <= COOLDOWN_SECONDS) {
           // The resend cooldown: a code went out under a minute ago and is still valid.
-          const known = this.codes.get(phone);
-          this.codes.set(phone, {
-            resendAvailableAt: now + wait * 1000,
-            expiresAt: known?.expiresAt ?? now + CODE_LEFT_AFTER_COOLDOWN_MS,
-          });
-          const wasOnCode = this.step === 'code';
-          this.goToCode(phone);
+          this.toCode(
+            phone,
+            now + wait * 1000,
+            this.codeExpiresAt ?? now + CODE_LEFT_AFTER_COOLDOWN_MS,
+          );
           if (!wasOnCode) this.notice = 'code_already_sent';
           yield this.save();
           return wasOnCode ? fail('resend_not_yet', wait) : ok;
@@ -246,34 +244,33 @@ export class LoginFlowStore {
     }
   });
 
+  private toCode(phone: string, resendAvailableAt: number, codeExpiresAt: number): void {
+    this.phone = phone;
+    this.resendAvailableAt = resendAvailableAt;
+    this.codeExpiresAt = codeExpiresAt;
+    this.step = 'code';
+  }
+
   private finish = flow(function* (this: LoginFlowStore, reply: LoggedIn) {
     yield this.deps.completeLogin(tokensFromReply(reply, Date.now()));
     yield this.reset();
   });
 
-  private dropRegistration = flow(function* (this: LoginFlowStore, notice: LoginNotice) {
-    this.registrationToken = null;
-    this.registrationExpiresAt = null;
-    this.backToPhone(notice);
-    yield this.save();
+  /** Back to an empty phone step, with a message saying why. */
+  private startOver = flow(function* (this: LoginFlowStore, notice: LoginNotice) {
+    yield this.reset();
+    this.notice = notice;
   });
 
-  private goToCode(phone: string): void {
-    this.phone = phone;
-    this.step = 'code';
-  }
-
-  private backToPhone(notice: LoginNotice | null): void {
-    this.step = 'phone';
-    this.notice = notice;
-  }
-
+  /** Saves the code / name step (the phone step is never saved). */
   private async save(): Promise<void> {
+    if (this.step === 'phone' || this.phone === null) return;
     const progress: LoginProgress = {
       country: this.country,
       step: this.step,
       phone: this.phone,
-      codes: Object.fromEntries(this.codes),
+      resendAvailableAt: this.resendAvailableAt,
+      codeExpiresAt: this.codeExpiresAt,
       registrationToken: this.registrationToken,
       registrationExpiresAt: this.registrationExpiresAt,
     };

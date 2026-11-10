@@ -2,7 +2,7 @@ import { observer } from 'mobx-react-lite';
 import { startTransition, useActionState, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { Button, Text, TextField } from '@/ui';
+import { Button, Screen, Text, TextField } from '@/ui';
 
 import type { LoginResult } from '../errors';
 import type { LoginFlowStore } from '../login-flow-store';
@@ -18,7 +18,25 @@ export const NameStep = observer(function NameStep({ login }: { login: LoginFlow
   const error = useLoginError(result);
 
   return (
-    <>
+    <Screen
+      footer={
+        <>
+          <Button
+            testID="name-continue"
+            title={t('auth.name.continue')}
+            loading={pending}
+            disabled={name.trim().length === 0}
+            onPress={() => startTransition(() => submit(name))}
+          />
+          <Button
+            variant="secondary"
+            title={t('auth.code.changeNumber')}
+            disabled={pending}
+            onPress={() => void login.back()}
+          />
+        </>
+      }
+    >
       <Text variant="title" accessibilityRole="header">
         {t('auth.name.title')}
       </Text>
@@ -36,19 +54,6 @@ export const NameStep = observer(function NameStep({ login }: { login: LoginFlow
         returnKeyType="done"
         onSubmitEditing={() => startTransition(() => submit(name))}
       />
-      <Button
-        testID="name-continue"
-        title={t('auth.name.continue')}
-        loading={pending}
-        disabled={name.trim().length === 0}
-        onPress={() => startTransition(() => submit(name))}
-      />
-      <Button
-        variant="secondary"
-        title={t('auth.code.changeNumber')}
-        disabled={pending}
-        onPress={() => void login.back()}
-      />
-    </>
+    </Screen>
   );
 });

@@ -105,7 +105,7 @@ describe('LoginFlowStore: phone step', () => {
   });
 });
 
-describe('LoginFlowStore: back and resend', () => {
+describe('LoginFlowStore: back, resend and the countdown', () => {
   async function onCodeStep() {
     const s = setup();
     s.api.requestCode.mockResolvedValue(codeSent);
@@ -113,36 +113,63 @@ describe('LoginFlowStore: back and resend', () => {
     return s;
   }
 
-  it('back keeps the number and its countdown; the same number again sends no new SMS', async () => {
-    const { login, api } = await onCodeStep();
-    advance(20);
+  it('back is refused while the countdown runs (Change number waits like resend)', async () => {
+    const { login, progress } = await onCodeStep();
+    expect(login.canGoBack).toBe(false);
     await login.back();
-    expect(login.step).toBe('phone');
-
-    await expect(login.requestCode('050-234-5678')).resolves.toEqual({ ok: true });
-
-    expect(api.requestCode).toHaveBeenCalledTimes(1);
     expect(login.step).toBe('code');
-    expect(login.secondsUntilResend).toBe(40);
+    expect(progress.value).not.toBeNull();
   });
 
-  it('a different number sends a new request', async () => {
+  it('back after the countdown clears everything, in memory and in storage', async () => {
+    const { login, progress } = await onCodeStep();
+    login.setCountry('IL');
+    advance(60);
+    expect(login.canGoBack).toBe(true);
+    await login.back();
+    expect(login).toMatchObject({
+      step: 'phone',
+      phone: null,
+      resendAvailableAt: null,
+      codeExpiresAt: null,
+      country: 'IL',
+      notice: null,
+    });
+    expect(progress.value).toBeNull();
+  });
+
+  // The owner's bug report: back, then the same number while its code was still valid used to skip the
+  // request (and the countdown). Now back clears everything, so it's a real request with a fresh countdown.
+  it('back, then the same number again: a new request and a fresh countdown', async () => {
     const { login, api } = await onCodeStep();
+    advance(90);
+    await login.back();
+    await expect(login.requestCode(PHONE)).resolves.toEqual({ ok: true });
+    expect(api.requestCode).toHaveBeenCalledTimes(2);
+    expect(login.step).toBe('code');
+    expect(login.secondsUntilResend).toBe(60);
+    expect(login.canGoBack).toBe(false);
+  });
+
+  it('back, then a different number: a new request and a fresh countdown', async () => {
+    const { login, api } = await onCodeStep();
+    advance(60);
     await login.back();
     await login.requestCode('053-123-4567');
-    expect(api.requestCode).toHaveBeenCalledTimes(2);
+    expect(api.requestCode).toHaveBeenLastCalledWith('+972531234567');
     expect(login.phone).toBe('+972531234567');
+    expect(login.secondsUntilResend).toBe(60);
   });
 
-  it('the same number after its code expired sends a new request', async () => {
-    const { login, api } = await onCodeStep();
-    await login.back();
-    advance(301);
-    await login.requestCode(PHONE);
-    expect(api.requestCode).toHaveBeenCalledTimes(2);
+  it('the phone step is never saved', async () => {
+    const { login, progress } = setup();
+    login.setCountry('GB');
+    await login.requestCode('07400 123456'); // blocked on the device
+    await login.requestCode('03-123-4567'); // invalid
+    expect(progress.save).not.toHaveBeenCalled();
   });
 
-  it('resend waits for the countdown', async () => {
+  it('resend waits for the countdown, then restarts it', async () => {
     const { login, api } = await onCodeStep();
     await expect(login.resendCode()).resolves.toEqual({
       ok: false,
@@ -152,6 +179,19 @@ describe('LoginFlowStore: back and resend', () => {
     await expect(login.resendCode()).resolves.toEqual({ ok: true });
     expect(api.requestCode).toHaveBeenCalledTimes(2);
     expect(login.secondsUntilResend).toBe(60);
+    expect(login.canGoBack).toBe(false);
+  });
+
+  it("a short 429 on resend keeps the code step with the server's wait", async () => {
+    const { login, api } = await onCodeStep();
+    advance(60);
+    api.requestCode.mockRejectedValue(new ApiError(429, 'rate_limited', 20));
+    await expect(login.resendCode()).resolves.toEqual({
+      ok: false,
+      error: { code: 'resend_not_yet', retryAfterSeconds: 20 },
+    });
+    expect(login.step).toBe('code');
+    expect(login.secondsUntilResend).toBe(20);
   });
 });
 
@@ -204,13 +244,14 @@ describe('LoginFlowStore: code step', () => {
     expect(login.step).toBe('code');
   });
 
-  it('an expired code goes back to the phone step with a notice', async () => {
-    const { login, api } = await onCodeStep();
+  it('an expired code goes back to an empty phone step with a notice', async () => {
+    const { login, api, progress } = await onCodeStep();
     api.verifyCode.mockRejectedValue(new ApiError(400, 'code_expired'));
     await login.verifyCode('123456');
     expect(login.step).toBe('phone');
+    expect(login.phone).toBeNull();
     expect(login.notice).toBe('code_expired');
-    expect(login.codes.has(PHONE)).toBe(false);
+    expect(progress.value).toBeNull();
   });
 
   it('retries once on login_conflict', async () => {
@@ -263,12 +304,13 @@ describe('LoginFlowStore: name step', () => {
     expect(api.register).not.toHaveBeenCalled();
   });
 
-  it('back deletes the registration token, also from storage', async () => {
+  it('back (no countdown on the name step) deletes the registration token, also from storage', async () => {
     const { login, progress } = await onNameStep();
+    expect(login.canGoBack).toBe(true);
     await login.back();
     expect(login.step).toBe('phone');
     expect(login.registrationToken).toBeNull();
-    expect(progress.value?.registrationToken).toBeNull();
+    expect(progress.value).toBeNull();
   });
 
   it('an expired registration token (locally) goes back to the phone step without a request', async () => {
@@ -308,38 +350,39 @@ describe('LoginFlowStore: name step', () => {
 });
 
 describe('LoginFlowStore: restore after the app was closed', () => {
-  const base = (now: number): LoginProgress => ({
+  const onCode = (now: number): LoginProgress => ({
     country: 'IL',
     step: 'code',
     phone: PHONE,
-    codes: { [PHONE]: { resendAvailableAt: now + 30_000, expiresAt: now + 200_000 } },
+    resendAvailableAt: now + 30_000,
+    codeExpiresAt: now + 200_000,
     registrationToken: null,
     registrationExpiresAt: null,
   });
 
   it('resumes the code step with its countdown while the code is valid', async () => {
-    const { login } = setup(base(Date.now()));
+    const { login } = setup(onCode(Date.now()));
     await login.restore();
     expect(login.step).toBe('code');
     expect(login.phone).toBe(PHONE);
     expect(login.secondsUntilResend).toBe(30);
   });
 
-  it('starts on the phone step (number kept) once the code expired', async () => {
-    const saved = base(Date.now() - 250_000);
-    const { login, progress } = setup(saved);
+  it('once the code expired: an empty phone step and the storage cleared', async () => {
+    const { login, progress } = setup(onCode(Date.now() - 250_000));
     await login.restore();
     expect(login.step).toBe('phone');
-    expect(login.phone).toBe(PHONE);
-    expect(progress.value?.codes).toEqual({});
+    expect(login.phone).toBeNull();
+    expect(progress.value).toBeNull();
   });
 
   it('resumes the name step while the registration token is valid', async () => {
     const now = Date.now();
     const { login } = setup({
-      ...base(now),
+      ...onCode(now),
       step: 'name',
-      codes: {},
+      resendAvailableAt: null,
+      codeExpiresAt: null,
       registrationToken: 'reg',
       registrationExpiresAt: now + 300_000,
     });
@@ -350,16 +393,16 @@ describe('LoginFlowStore: restore after the app was closed', () => {
 
   it('drops an expired registration token', async () => {
     const now = Date.now();
-    const { login } = setup({
-      ...base(now),
+    const { login, progress } = setup({
+      ...onCode(now),
       step: 'name',
-      codes: {},
       registrationToken: 'reg',
       registrationExpiresAt: now - 1,
     });
     await login.restore();
     expect(login.step).toBe('phone');
     expect(login.registrationToken).toBeNull();
+    expect(progress.value).toBeNull();
   });
 
   it('starts fresh when nothing is saved', async () => {

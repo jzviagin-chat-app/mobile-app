@@ -60,6 +60,7 @@ tested with our Expo SDK, like a curated lockfile. `npm run doctor` checks it.
 | API client | `openapi-typescript` + `openapi-fetch` (step 2) | axios instance + interceptors, types from OpenAPI | Typed paths and bodies from auth-service's schema |
 | Secure storage | **expo-secure-store** (iOS Keychain / Android Keystore) | OS keychain (`keytar`) | Tokens never in AsyncStorage |
 | Styling | **`StyleSheet`** + our theme tokens (light + dark) | CSS-in-JS with design tokens | No extra layer to learn; nothing to migrate later |
+| Keyboard | **react-native-keyboard-controller** (+ `react-native-reanimated`) | – | Follows the keyboard natively, also with Android's edge-to-edge display (SDK 58 default), where the window doesn't shrink for it; recommended by Expo's keyboard guide. React Native's own `KeyboardAvoidingView` left the buttons behind the keyboard when a login step switched with it open |
 | i18n | **i18next** + `react-i18next` + **expo-localization** | i18next | The standard; typed keys; follows the phone language |
 | Validation | **zod 4** | zod | Config now; API/form edges later |
 | Tests | **Jest** (`jest-expo`) + **React Native Testing Library 14** | Jest + React Testing Library | Unit tests and screens rendered in Node |
@@ -91,8 +92,10 @@ docker compose up -d                       # local Postgres + Redis
 uv run alembic upgrade head
 ENVIRONMENT=dev uv run uvicorn auth_service.main:app --reload   # :8000; codes appear in this log
 ```
-Then, with the S22 on USB: `adb reverse tcp:8000 tcp:8000`, so the phone's `localhost:8000` reaches the Mac
-(see §9). Against production (real SMS, prepaid credits) only for a final check: set `EXPO_PUBLIC_API_URL`
+Then the phone needs `adb reverse tcp:8000 tcp:8000`, so its `localhost:8000` reaches the Mac (see §9).
+`npm start` and `npm run android` run it for you (`npm run reverse`). Reconnecting the phone (often, with
+Wi-Fi debugging) drops it: the app then says "No connection", and `npm run reverse` restores it. With
+several devices attached, run `adb -s <device> reverse tcp:8000 tcp:8000` for each. Against production (real SMS, prepaid credits) only for a final check: set `EXPO_PUBLIC_API_URL`
 in `.env.development.local`.
 
 ## 4. Project layout
@@ -209,8 +212,12 @@ Two sides, switched by the session (`src/root/RootNavigator.tsx`):
 **The login is one route with a state machine.** `/auth` shows `LoginScreen`, which renders the step held
 by `LoginFlowStore.step` (`phone` → `code` → `name`). Separate routes would let Android's back button pop a
 screen while the store still says "code requested"; with one route the store is the only truth. Back (the
-Android button via `BackHandler`, or "Change number") calls `login.back()`; on the first step the back
-button leaves the app as usual. Steps slide in with a short animation done by hand.
+Android button via `BackHandler`, or "Change number") calls `login.back()`, which **clears the whole login**
+(an empty phone step, nothing saved). On the code step it waits for the same countdown as "Send a new
+code" (the button is greyed out, the Android button does nothing); on the first step the back button
+leaves the app as usual. Each step's main buttons sit at the bottom (`Screen`'s `footer`) and rise with the
+keyboard. Steps switch without an animation: a fade-in that starts invisible left a step blank for
+seconds on a busy emulator.
 
 **Lazy loading.** On a phone the whole JS bundle (Hermes bytecode) is already in the app; what matters is
 that a screen's code doesn't *run* before it's needed. Expo Router gives each route to React Navigation as
@@ -271,20 +278,26 @@ phone ──requestCode──► code ──verify: logged_in──────�
   min) → `register {registration_token, display_name, device}` → tokens. `device` = platform + the phone's
   name (`expo-device`: the name from the phone's settings on Android; the model on iOS, where the name is just
   "iPhone" without a special entitlement). A new SMS login signs the previous phone out (one primary device).
-- **Per-number timers:** going back and entering the same number while its code is valid goes straight to
-  the code step with the countdown still running (no new SMS); a different number sends a new one.
-- **The progress survives closing the app:** `{country, step, phone, timers, registration token}` is saved in
-  its own secure-store item after every change and restored at startup, resuming the code / name step while
-  the code / registration token is still valid. Without it a restart would cost a new SMS or hit the 60 s
-  cooldown (`429`). The registration token is deleted on use, expiry, back and sign-in.
-- **A `429` without saved progress** (reinstall, another phone): `Retry-After` ≤ 60 s means a code was just
-  sent, so the app goes to the code step anyway ("a code was already sent"); longer means the hourly / daily
-  limit ("try again in N min").
-- `code_expired` → back to the phone step with a notice; `login_conflict` → retried once automatically;
-  `invalid_registration_token` / `already_registered` → phone step with a notice.
+- **Back clears everything** (owner rule): every field, and the saved progress. Entering a number again is
+  always a real `otp/request`, with a fresh countdown from the server's answer.
+- **The code and name steps survive closing the app:** `{country, step, phone, resend / code expiry,
+  registration token}` is saved in its own secure-store item after every change on those steps and restored
+  at startup while the code / registration token is still valid (otherwise it's cleared). The phone step is
+  never saved. Without it a restart would cost a new SMS or hit the 60 s cooldown (`429`). The registration
+  token is deleted on use, expiry, back and sign-in.
+- **A short `429`** (`Retry-After` ≤ 60 s: a code was sent to this number under a minute ago, e.g. after a
+  reinstall) goes to the code step anyway ("a code was already sent") with the server's countdown; a longer
+  one is the hourly / daily limit ("try again in N min").
+- `code_expired` → an empty phone step with a notice; `login_conflict` → retried once automatically;
+  `invalid_registration_token` / `already_registered` → an empty phone step with a notice.
 
 **Phone numbers** (`features/auth/phone.ts`, `countries.ts`):
-- A searchable **country picker** (name in Hebrew or English, ISO code, calling code). Hard-coded lists:
+- A **searchable country dropdown** under the country button (`CountryDropdown`): a search field (name in
+  Hebrew or English, ISO code, calling code) and up to 5 rows (as many as fit above the keyboard) that
+  scroll through every country; it opens above the button when there's no room below, and closes on a tap
+  outside or Android back. The list is built once per language, only when the dropdown first opens
+  (sorting 245 names is slow on Hermes).
+  Hard-coded lists:
   `SELECTABLE_COUNTRIES` (IL, US, GB, DE, FR, ES, CA: validated and formatted on the device) and
   `SIGN_IN_COUNTRIES` (IL: what the server accepts, an SMS cost guard). A valid number of another selectable
   country is blocked on the device ("not available yet"), without a request. Every other country is listed
@@ -365,6 +378,7 @@ npm ci                       # install exactly what package-lock.json says (≈ 
 | Add a package | `npx expo install <pkg>` (dev: `npx expo install -- --save-dev <pkg>`) | `npm i` |
 | Production JS bundle (what CI checks) | `npx expo export --platform android` | `vite build` |
 | Refresh auth-service's API types (local auth-service running) | `npm run api:gen` | – |
+| Let the phone reach the local auth-service again ("No connection") | `npm run reverse` | – |
 
 CI (`.github/workflows/ci.yml`, job **`check`**) runs lint, format check, type check, tests, `expo-doctor`
 and a production bundle on every pull request and again on `main` after each merge.

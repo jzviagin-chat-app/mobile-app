@@ -1,6 +1,14 @@
-import { forwardRef, type ComponentRef, type ReactNode } from 'react';
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  type ComponentRef,
+  type ReactNode,
+} from 'react';
 import { StyleSheet, TextInput, View, type TextInputProps } from 'react-native';
 
+import { FOCUS_DELAY_MS } from './focus';
 import { Text } from './Text';
 import { useTheme } from './useTheme';
 
@@ -17,10 +25,20 @@ type Props = Omit<TextInputProps, 'style'> & {
 };
 
 export const TextField = forwardRef<ComponentRef<typeof TextInput>, Props>(function TextField(
-  { label, error, direction = 'auto', prefix, ...input },
+  { label, error, direction = 'auto', prefix, autoFocus = false, ...input },
   ref,
 ) {
   const theme = useTheme();
+  const inner = useRef<ComponentRef<typeof TextInput>>(null);
+  useImperativeHandle(ref, () => inner.current as ComponentRef<typeof TextInput>);
+
+  // autoFocus a moment after mounting (see FOCUS_DELAY_MS): React Native's own autoFocus often leaves
+  // the keyboard closed when a field appears right after a screen switch on Android.
+  useEffect(() => {
+    if (!autoFocus) return;
+    const timer = setTimeout(() => inner.current?.focus(), FOCUS_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [autoFocus]);
   const ltr = direction === 'ltr';
   return (
     <View style={{ gap: theme.spacing.xs }}>
@@ -41,7 +59,7 @@ export const TextField = forwardRef<ComponentRef<typeof TextInput>, Props>(funct
       >
         {prefix}
         <TextInput
-          ref={ref}
+          ref={inner}
           accessibilityLabel={label}
           placeholderTextColor={theme.colors.textMuted}
           style={[

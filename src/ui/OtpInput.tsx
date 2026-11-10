@@ -1,6 +1,7 @@
-import { useRef, type ComponentRef } from 'react';
+import { useEffect, useRef, type ComponentRef } from 'react';
 import { Pressable, StyleSheet, TextInput, View } from 'react-native';
 
+import { FOCUS_DELAY_MS } from './focus';
 import { Text } from './Text';
 import { useTheme } from './useTheme';
 
@@ -12,8 +13,11 @@ type Props = {
   length?: number;
   label: string;
   error?: boolean;
-  editable?: boolean;
-  autoFocus?: boolean;
+  /**
+   * While a code is being checked: typing is ignored, but the field stays editable and focused (making it
+   * non-editable would close the keyboard and grey the field on Android). Focus returns afterwards.
+   */
+  busy?: boolean;
 };
 
 /**
@@ -28,13 +32,21 @@ export function OtpInput({
   length = 6,
   label,
   error = false,
-  editable = true,
-  autoFocus = false,
+  busy = false,
 }: Props) {
   const theme = useTheme();
   const input = useRef<ComponentRef<typeof TextInput>>(null);
 
+  useEffect(() => {
+    if (busy) return;
+    // Ready for the next try (e.g. after a wrong code). A moment after mounting: on Android, focusing in
+    // the first frames after a screen switch often doesn't open the keyboard.
+    const timer = setTimeout(() => input.current?.focus(), FOCUS_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [busy]);
+
   function handleChange(text: string) {
+    if (busy) return;
     const digits = text.replace(/\D/g, '').slice(0, length);
     onChange(digits);
     if (digits.length === length) onComplete?.(digits);
@@ -48,7 +60,7 @@ export function OtpInput({
     >
       {Array.from({ length }, (_, i) => {
         const filled = i < value.length;
-        const active = editable && i === Math.min(value.length, length - 1);
+        const active = !busy && i === Math.min(value.length, length - 1);
         return (
           <View
             key={i}
@@ -78,9 +90,8 @@ export function OtpInput({
         keyboardType="number-pad"
         textContentType="oneTimeCode"
         autoComplete="sms-otp"
-        editable={editable}
-        autoFocus={autoFocus}
         caretHidden
+        underlineColorAndroid="transparent"
         style={styles.hidden}
       />
     </Pressable>
@@ -107,5 +118,6 @@ const styles = StyleSheet.create({
     end: 0,
     opacity: 0.011,
     color: 'transparent',
+    backgroundColor: 'transparent',
   },
 });

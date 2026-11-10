@@ -2,6 +2,7 @@ import '@/root/mobx-config';
 
 import * as SplashScreen from 'expo-splash-screen';
 import { useState } from 'react';
+import { KeyboardProvider } from 'react-native-keyboard-controller';
 
 import { getConfig } from '@/lib/config';
 import { RootNavigator, RootStoreProvider } from '@/root';
@@ -13,8 +14,10 @@ export default function RootLayout() {
   useState(getConfig); // fail fast on a bad EXPO_PUBLIC_API_URL (once, before the store exists)
 
   return (
-    <RootStoreProvider>
-      <RootNavigator />
-    </RootStoreProvider>
+    <KeyboardProvider>
+      <RootStoreProvider>
+        <RootNavigator />
+      </RootStoreProvider>
+    </KeyboardProvider>
   );
 }

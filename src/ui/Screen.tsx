@@ -1,28 +1,33 @@
 import type { ReactNode } from 'react';
-import { KeyboardAvoidingView, Platform, StyleSheet, View, type ViewStyle } from 'react-native';
+import { StyleSheet, View, type ViewStyle } from 'react-native';
+import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useTheme } from './useTheme';
 
 type Props = {
   children: ReactNode;
+  /** Pinned to the bottom (main actions: Continue, …); rises with the keyboard. */
+  footer?: ReactNode;
   /** Centre the content (e.g. empty or welcome screens). */
   centered?: boolean;
   style?: ViewStyle;
 };
 
 /**
- * A full screen with the theme background, safe-area insets and standard padding. The content moves up
- * when the keyboard opens (iOS needs this; Android resizes the window itself).
+ * A full screen with the theme background, safe-area insets and standard padding: content at the top,
+ * an optional footer at the bottom, which sits right above the keyboard when it's open.
+ *
+ * Keyboard: react-native-keyboard-controller's KeyboardAvoidingView (Expo SDK 58 keyboard-handling
+ * guide). It follows the keyboard natively, also with Android's edge-to-edge display, where the window
+ * doesn't shrink for the keyboard. React Native's own KeyboardAvoidingView, and tracking the keyboard
+ * height in JavaScript, both failed on Android when a login step switched with the keyboard open.
  */
-export function Screen({ children, centered = false, style }: Props) {
+export function Screen({ children, footer, centered = false, style }: Props) {
   const theme = useTheme();
   return (
     <SafeAreaView style={[styles.fill, { backgroundColor: theme.colors.background }]}>
-      <KeyboardAvoidingView
-        style={styles.fill}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      >
+      <KeyboardAvoidingView style={styles.fill} behavior="padding">
         <View
           style={[
             styles.fill,
@@ -33,6 +38,17 @@ export function Screen({ children, centered = false, style }: Props) {
         >
           {children}
         </View>
+        {footer ? (
+          <View
+            style={{
+              paddingHorizontal: theme.spacing.lg,
+              paddingBottom: theme.spacing.lg,
+              gap: theme.spacing.sm,
+            }}
+          >
+            {footer}
+          </View>
+        ) : null}
       </KeyboardAvoidingView>
     </SafeAreaView>
   );

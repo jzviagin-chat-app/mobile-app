@@ -60,8 +60,21 @@ export function getCountry(code: CountryCode, language: Language): Country {
   };
 }
 
-/** Every country: the selectable ones first (in their fixed order), then the rest by name. */
+const lists = new Map<Language, Country[]>();
+
+/**
+ * Every country: the selectable ones first (in their fixed order), then the rest by name. Built once per
+ * language and cached: sorting 245 names with localeCompare is slow on the phone's JS engine.
+ */
 export function listCountries(language: Language): Country[] {
+  const cached = lists.get(language);
+  if (cached) return cached;
+  const list = buildList(language);
+  lists.set(language, list);
+  return list;
+}
+
+function buildList(language: Language): Country[] {
   const all = getCountries().map((code) => getCountry(code, language));
   const selectable = SELECTABLE_COUNTRIES.map((code) => getCountry(code, language));
   const rest = all

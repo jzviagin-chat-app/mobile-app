@@ -2,25 +2,24 @@ import { z } from 'zod';
 
 import { createSecureItem, type SecureItem } from '@/lib/secure-item';
 
-const timersSchema = z.object({ resendAvailableAt: z.number(), expiresAt: z.number() });
-
 const progressSchema = z.object({
   country: z.string().length(2),
-  step: z.enum(['phone', 'code', 'name']),
-  phone: z.string().nullable(),
-  /** Per E.164 number: when a resend is allowed and when its code expires (Unix ms, phone clock). */
-  codes: z.record(z.string(), timersSchema),
+  /** Only the code and name steps are saved: back to the phone step clears everything. */
+  step: z.enum(['code', 'name']),
+  phone: z.string(),
+  /** Unix ms on the phone's clock. */
+  resendAvailableAt: z.number().nullable(),
+  codeExpiresAt: z.number().nullable(),
   registrationToken: z.string().nullable(),
   registrationExpiresAt: z.number().nullable(),
 });
 
 /**
- * A login in progress, saved so closing the app doesn't cost a 429 or a new SMS (owner decision
- * 2026-11-09). Holds a phone number and, for up to 10 minutes, the registration token: secure storage only,
- * deleted on use, expiry, back and sign-in.
+ * A login in progress on the code or name step, saved so closing the app doesn't cost a 429 or a new SMS
+ * (owner decision 2026-11-09). Holds a phone number and, for up to 10 minutes, the registration token:
+ * secure storage only, deleted on use, expiry, back and sign-in.
  */
 export type LoginProgress = z.infer<typeof progressSchema>;
-export type CodeTimers = z.infer<typeof timersSchema>;
 export type LoginProgressStorage = SecureItem<LoginProgress>;
 
 export function createLoginProgressStorage(): LoginProgressStorage {

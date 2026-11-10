@@ -30,7 +30,8 @@ describe('RootStore', () => {
       country: 'IL',
       step: 'code' as const,
       phone: '+972502345678',
-      codes: {},
+      resendAvailableAt: null,
+      codeExpiresAt: Date.now() + 60_000,
       registrationToken: null,
       registrationExpiresAt: null,
     });
