@@ -1,7 +1,12 @@
 import { QueryClient } from '@tanstack/query-core';
 import type { i18n } from 'i18next';
 
-import { AuthStore, LoginFlowStore, type LoginProgressStorage } from '@/features/auth';
+import {
+  AuthStore,
+  LoginFlowStore,
+  type LoginProgressStorage,
+  type SendBlocksStorage,
+} from '@/features/auth';
 import type { AuthApi } from '@/lib/api';
 import type { Clock } from '@/lib/clock';
 import type { DeviceInfo } from '@/lib/device';
@@ -15,6 +20,7 @@ export type RootStoreDeps = {
   api: AuthApi;
   tokenStorage: TokenStorage;
   loginProgress: LoginProgressStorage;
+  sendBlocks: SendBlocksStorage;
   device: DeviceInfo;
   clock: Clock;
   /** True on the first launch after an install (see lib/fresh-install.ts). */
@@ -46,6 +52,7 @@ export class RootStore {
       completeLogin: (tokens) => this.auth.completeLogin(tokens),
       device: deps.device,
       progress: deps.loginProgress,
+      blocks: deps.sendBlocks,
       clock: deps.clock,
     });
   }
@@ -56,15 +63,18 @@ export class RootStore {
    */
   async restore(): Promise<void> {
     if (this.deps.isFirstLaunchAfterInstall()) {
-      await Promise.all([this.deps.tokenStorage.clear(), this.deps.loginProgress.clear()]).catch(
-        () => log.warn('Could not clear storage after a fresh install'),
-      );
+      await Promise.all([
+        this.deps.tokenStorage.clear(),
+        this.deps.loginProgress.clear(),
+        this.deps.sendBlocks.clear(),
+      ]).catch(() => log.warn('Could not clear storage after a fresh install'));
     }
     await Promise.all([this.auth.restore(), this.login.restore()]);
   }
 
   dispose(): void {
     this.auth.dispose();
+    this.login.dispose();
     this.queryClient.unmount();
     this.queryClient.clear();
   }

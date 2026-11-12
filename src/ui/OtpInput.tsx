@@ -1,5 +1,5 @@
 import { useEffect, useRef, type ComponentRef } from 'react';
-import { Pressable, StyleSheet, TextInput, View } from 'react-native';
+import { Keyboard, Pressable, StyleSheet, TextInput, View } from 'react-native';
 
 import { FOCUS_DELAY_MS } from './focus';
 import { Text } from './Text';
@@ -18,6 +18,11 @@ type Props = {
    * non-editable would close the keyboard and grey the field on Android). Focus returns afterwards.
    */
   busy?: boolean;
+  /**
+   * The code can't be typed now (too many wrong tries, or a wait before the next try): not editable,
+   * greyed out, keyboard closed. Focus and the keyboard come back when it's enabled again.
+   */
+  disabled?: boolean;
 };
 
 /**
@@ -33,20 +38,26 @@ export function OtpInput({
   label,
   error = false,
   busy = false,
+  disabled = false,
 }: Props) {
   const theme = useTheme();
   const input = useRef<ComponentRef<typeof TextInput>>(null);
 
   useEffect(() => {
+    if (disabled) {
+      input.current?.blur();
+      Keyboard.dismiss();
+      return;
+    }
     if (busy) return;
     // Ready for the next try (e.g. after a wrong code). A moment after mounting: on Android, focusing in
     // the first frames after a screen switch often doesn't open the keyboard.
     const timer = setTimeout(() => input.current?.focus(), FOCUS_DELAY_MS);
     return () => clearTimeout(timer);
-  }, [busy]);
+  }, [busy, disabled]);
 
   function handleChange(text: string) {
-    if (busy) return;
+    if (busy || disabled) return;
     const digits = text.replace(/\D/g, '').slice(0, length);
     onChange(digits);
     if (digits.length === length) onComplete?.(digits);
@@ -55,12 +66,13 @@ export function OtpInput({
   return (
     <Pressable
       onPress={() => input.current?.focus()}
+      disabled={disabled}
       accessible={false}
-      style={[styles.row, { gap: theme.spacing.sm }]}
+      style={[styles.row, { gap: theme.spacing.sm }, disabled && styles.disabled]}
     >
       {Array.from({ length }, (_, i) => {
         const filled = i < value.length;
-        const active = !busy && i === Math.min(value.length, length - 1);
+        const active = !busy && !disabled && i === Math.min(value.length, length - 1);
         return (
           <View
             key={i}
@@ -86,6 +98,8 @@ export function OtpInput({
         accessibilityLabel={label}
         value={value}
         onChangeText={handleChange}
+        editable={!disabled}
+        accessibilityState={{ disabled }}
         maxLength={length}
         keyboardType="number-pad"
         textContentType="oneTimeCode"
@@ -109,6 +123,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  disabled: { opacity: 0.4 },
   // Covers the boxes (so a long-press "Paste" lands on it) but is invisible.
   hidden: {
     position: 'absolute',

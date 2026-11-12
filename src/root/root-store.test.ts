@@ -32,16 +32,24 @@ describe('RootStore', () => {
       phone: '+972502345678',
       resendAvailableAt: null,
       codeExpiresAt: Date.now() + 60_000,
+      codeState: 'active' as const,
+      attemptsLeft: null,
+      codeRetryAvailableAt: null,
       registrationToken: null,
       registrationExpiresAt: null,
     });
+    const sendBlocks = memoryItem({
+      all: null,
+      numbers: [{ phone: '+972502345678', until: 1e15 }],
+    });
     const root = new RootStore(
-      testDeps({ tokenStorage, loginProgress, isFirstLaunchAfterInstall: () => true }),
+      testDeps({ tokenStorage, loginProgress, sendBlocks, isFirstLaunchAfterInstall: () => true }),
     );
     await root.restore();
     expect(root.auth.status).toBe('signedOut');
     expect(tokenStorage.value).toBeNull();
     expect(loginProgress.value).toBeNull();
+    expect(sendBlocks.value).toBeNull();
     root.dispose();
   });
 

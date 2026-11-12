@@ -1,8 +1,10 @@
-/** 75 → "1:15" (countdowns and waits). */
+/** 75 → "1:15", 3723 → "1:02:03" (countdowns and waits). */
 export function formatDuration(totalSeconds: number): string {
   const seconds = Math.max(0, Math.ceil(totalSeconds));
-  const minutes = Math.floor(seconds / 60);
-  return `${minutes}:${String(seconds % 60).padStart(2, '0')}`;
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const rest = String(seconds % 60).padStart(2, '0');
+  return hours > 0 ? `${hours}:${String(minutes).padStart(2, '0')}:${rest}` : `${minutes}:${rest}`;
 }
 
 /**

@@ -26,4 +26,13 @@ describe('OtpInput', () => {
     expect(screen.getByText('1')).toBeOnTheScreen();
     expect(screen.getByText('2')).toBeOnTheScreen();
   });
+
+  it('disabled: not editable and ignores input (too many tries, or a wait before the next try)', async () => {
+    const onChange = jest.fn();
+    await render(<OtpInput label="Code" value="" onChange={onChange} disabled />);
+    const input = screen.getByTestId('otp-input');
+    expect(input).toBeDisabled();
+    await fireEvent.changeText(input, '123456');
+    expect(onChange).not.toHaveBeenCalled();
+  });
 });

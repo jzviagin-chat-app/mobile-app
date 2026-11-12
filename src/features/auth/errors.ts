@@ -1,14 +1,18 @@
 import { ApiError, NetworkError } from '@/lib/api';
 import { log } from '@/lib/log';
 
-/** Why a login action didn't succeed. Screens show `auth.errors.<code>`. */
+/**
+ * Why a login action didn't succeed. Screens show `auth.errors.<code>`, except for the ones they show live
+ * from the store with a countdown (`blocked`, `invalid_code`, `too_many_attempts`).
+ */
 export type LoginErrorCode =
   | 'invalid_phone'
   | 'country_not_available'
   | 'rate_limited'
-  | 'resend_not_yet'
+  | 'blocked'
   | 'sms_unavailable'
   | 'invalid_code'
+  | 'too_many_attempts'
   | 'code_expired'
   | 'account_blocked'
   | 'invalid_name'
@@ -41,10 +45,12 @@ export function toLoginError(error: unknown): LoginResult {
       case 'already_registered':
         return fail(error.code);
       case 'rate_limited':
-        return fail('rate_limited', error.retryAfterSeconds);
+        return fail('rate_limited');
       case 'invalid_registration_token':
         return fail('registration_expired');
       default:
+        // e.g. the ingress's own 429 (200 requests / 10 s per IP) has no JSON body.
+        if (error.status === 429) return fail('rate_limited');
         log.warn('Login call failed', { status: error.status, code: error.code });
         return fail('server_error');
     }

@@ -235,9 +235,11 @@ anyway: re-export a feature screen.
   generated types are committed, so CI never needs the server. `openapi-typescript` runs through `npx` at a
   pinned version (it declares a TypeScript 5 peer; the generated file works with TypeScript 6).
 - Calls go through `openapi-fetch` (typed paths, bodies, responses), with a 15 s timeout. Every call returns
-  the success body or throws **`ApiError { status, code, retryAfterSeconds }`** (code branches on `code`,
-  never on the server's message) or **`NetworkError`** (`offline` / `timeout`). Error codes are a
-  hand-written union from auth-service's README. It never logs bodies or headers.
+  the success body or throws **`ApiError { status, code, details }`** (code branches on `code`, never on the
+  server's message) or **`NetworkError`** (`offline` / `timeout`). Error codes are a hand-written union from
+  auth-service's README. `details` holds the error's machine-readable fields, each type-checked (a wrong
+  value is dropped): `limit` and `retryAfterSeconds` (429, 503; else the `Retry-After` header),
+  `attemptsLeft`, `resendAfterSeconds` (the code errors). It never logs bodies or headers.
 
 **Tokens** (`src/lib/token-storage.ts`): `expo-secure-store`, one JSON item `{access, refresh,
 accessExpiresAt}` (one write keeps them consistent), `AFTER_FIRST_UNLOCK_THIS_DEVICE_ONLY` (not restored to
@@ -272,24 +274,41 @@ another phone, not in backups; readable for background work after the first unlo
 ```
 phone ──requestCode──► code ──verify: logged_in──────────────► signed in
   ▲                     │   └─verify: registration_required──► name ──register──► signed in
-  └────── back() ───────┴──────────────────────────────── back() deletes the registration token
+  ├────── back() ───────┘                                       │   (no way back from the name step)
+  └──────────── the code / registration token expired ──────────┘   (everything cleared, with a notice)
 ```
 - `otp/request {phone}` → SMS → `otp/verify {phone, code, device}` → tokens, or a registration token (10
   min) → `register {registration_token, display_name, device}` → tokens. `device` = platform + the phone's
   name (`expo-device`: the name from the phone's settings on Android; the model on iOS, where the name is just
   "iPhone" without a special entitlement). A new SMS login signs the previous phone out (one primary device).
 - **Back clears everything** (owner rule): every field, and the saved progress. Entering a number again is
-  always a real `otp/request`, with a fresh countdown from the server's answer.
-- **The code and name steps survive closing the app:** `{country, step, phone, resend / code expiry,
-  registration token}` is saved in its own secure-store item after every change on those steps and restored
-  at startup while the code / registration token is still valid (otherwise it's cleared). The phone step is
-  never saved. Without it a restart would cost a new SMS or hit the 60 s cooldown (`429`). The registration
+  always a real `otp/request`, with a fresh countdown from the server's answer. Back ("Change number", the
+  Android button) waits for the **full** resend countdown, even an hour after the hour's last code; the
+  name step has **no way back** (the code is verified: the only way is on).
+- **The code step stays in every case** (owner, 2026-11-11): a wrong code shows the tries left
+  (`attempts_left`) and the field takes the next code at once; after the 5th wrong try
+  (`too_many_attempts`) the field is disabled until a new code is sent. If the server ever asks to wait
+  before the next try (`retry_after_seconds` on `invalid_code`: not sent today), the field is disabled
+  with a countdown. The resend countdown only ever grows: the 202's wait (an hour after the window's last
+  code) beats the cooldown a verify error reports.
+- **Expiry starts over** (owner, 2026-11-12): when the code or the registration token expires, an empty
+  phone step with a notice: while the app is open (a reaction on the clock, also right after the app
+  returns from the background), at startup, or when the server says so (`code_expired`,
+  `invalid_registration_token`). Every deadline is an absolute time on the phone's clock, so time spent
+  closed counts: reopened inside the window, the step resumes with only the time left.
+- **Refused code requests are shown live and remembered.** `429 rate_limited` names its `limit`:
+  `resend_cooldown` on the phone step goes to the code step ("a code was already sent", e.g. after a
+  reinstall); `phone_hour` / `phone_day` block that number (Continue disabled while it's typed; other
+  numbers work); `ip_hour` / `ip_day` and the daily SMS cap (`503` + `Retry-After`) block every number.
+  Each shows "try again in 47:12", counting down. These blocks are kept in their own secure item
+  (`send-blocks`), apart from the login progress: going back doesn't clear them, signing in does, and
+  expired ones are dropped. A resend wait still running when a code expires becomes a block for that number.
+- **The code and name steps survive closing the app:** `{country, step, phone, resend / code expiry, code
+  state, tries left, registration token}` is saved in its own secure-store item after every change on those
+  steps and restored at startup while the code / registration token is still valid. The phone step is
+  never saved. Without it a restart would cost a new SMS or hit the cooldown (`429`). The registration
   token is deleted on use, expiry, back and sign-in.
-- **A short `429`** (`Retry-After` ≤ 60 s: a code was sent to this number under a minute ago, e.g. after a
-  reinstall) goes to the code step anyway ("a code was already sent") with the server's countdown; a longer
-  one is the hourly / daily limit ("try again in N min").
-- `code_expired` → an empty phone step with a notice; `login_conflict` → retried once automatically;
-  `invalid_registration_token` / `already_registered` → an empty phone step with a notice.
+- `login_conflict` → retried once automatically; `already_registered` → an empty phone step with a notice.
 
 **Phone numbers** (`features/auth/phone.ts`, `countries.ts`):
 - A **searchable country dropdown** under the country button (`CountryDropdown`): a search field (name in

@@ -19,22 +19,15 @@ export const NameStep = observer(function NameStep({ login }: { login: LoginFlow
 
   return (
     <Screen
+      // The code is verified: the only way is on (no "Change number"; owner decision 2026-11-11).
       footer={
-        <>
-          <Button
-            testID="name-continue"
-            title={t('auth.name.continue')}
-            loading={pending}
-            disabled={name.trim().length === 0}
-            onPress={() => startTransition(() => submit(name))}
-          />
-          <Button
-            variant="secondary"
-            title={t('auth.code.changeNumber')}
-            disabled={pending}
-            onPress={() => void login.back()}
-          />
-        </>
+        <Button
+          testID="name-continue"
+          title={t('auth.name.continue')}
+          loading={pending}
+          disabled={name.trim().length === 0}
+          onPress={() => startTransition(() => submit(name))}
+        />
       }
     >
       <Text variant="title" accessibilityRole="header">

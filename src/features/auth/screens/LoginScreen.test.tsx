@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react-native';
 import * as ReactNative from 'react-native';
 import { useKeyboardState } from 'react-native-keyboard-controller';
 
-import { ApiError } from '@/lib/api';
+import { toApiError } from '@/lib/api/errors';
 import { createClock } from '@/lib/clock';
 import { RootStoreProvider, useRootStore } from '@/root';
 import { testDeps } from '@/root/test-deps';
@@ -21,6 +21,46 @@ const registrationRequired = {
   registration_token: 'reg',
   expires_in: 600,
 } as const;
+
+/** An error exactly as auth-service sends it, through the real parser. */
+function server(status: number, body: object, retryAfter?: number) {
+  const headers = retryAfter === undefined ? undefined : { 'Retry-After': String(retryAfter) };
+  return toApiError(new Response(null, { status, headers }), body);
+}
+const rateLimited = (limit: string, seconds: number) =>
+  server(
+    429,
+    { error: 'rate_limited', message: '…', limit, retry_after_seconds: seconds },
+    seconds,
+  );
+const invalidCode = (attemptsLeft: number, extra: object = {}) =>
+  server(400, {
+    error: 'invalid_code',
+    message: '…',
+    attempts_left: attemptsLeft,
+    resend_after_seconds: 60,
+    ...extra,
+  });
+const tooManyAttempts = (resendAfter: number) =>
+  server(400, { error: 'too_many_attempts', message: '…', resend_after_seconds: resendAfter });
+
+type BackHandlerFn = Parameters<typeof ReactNative.BackHandler.addEventListener>[1];
+
+/** Captures the screen's Android back handler; `press()` runs it like the hardware button would. */
+function captureBackButton() {
+  const handlers: BackHandlerFn[] = [];
+  jest.spyOn(ReactNative.BackHandler, 'addEventListener').mockImplementation((_event, handler) => {
+    handlers.push(handler);
+    return { remove: jest.fn() };
+  });
+  return async () => {
+    let handled: boolean | null | undefined;
+    await act(async () => {
+      handled = handlers.at(-1)?.({} as never);
+    });
+    return handled;
+  };
+}
 
 function Login() {
   const { login } = useRootStore();
@@ -105,10 +145,12 @@ describe('LoginScreen: phone step', () => {
 
   it('shows a server error', async () => {
     const deps = await renderLogin();
-    deps.fakeApi.requestCode.mockRejectedValue(new ApiError(429, 'rate_limited', 1800));
+    deps.fakeApi.requestCode.mockRejectedValue(server(503, { error: 'sms_unavailable' }));
     await fireEvent.changeText(await screen.findByTestId('phone-input'), '0502345678');
     await fireEvent.press(screen.getByTestId('phone-continue'));
-    expect(await screen.findByText('Too many attempts. Try again in 30:00.')).toBeOnTheScreen();
+    expect(
+      await screen.findByText("We can't send codes right now. Try again later."),
+    ).toBeOnTheScreen();
   });
 
   it('the country picker searches, greys out unsupported countries and blocks non-IL sign-in', async () => {
@@ -169,11 +211,12 @@ describe('LoginScreen: code step', () => {
   it('a pasted / autofilled code submits at once', async () => {
     const deps = await renderLogin();
     await toCodeStep(deps);
-    deps.fakeApi.verifyCode.mockRejectedValue(new ApiError(400, 'invalid_code'));
+    deps.fakeApi.verifyCode.mockRejectedValue(invalidCode(4));
     await fireEvent.changeText(screen.getByTestId('otp-input'), '12 34-56');
     expect(deps.fakeApi.verifyCode).toHaveBeenCalledWith('+972502345678', '123456', deps.device);
-    expect(await screen.findByText(/That code is wrong/)).toBeOnTheScreen();
+    expect(await screen.findByText('Wrong code. Tries left: 4.')).toBeOnTheScreen();
     expect(screen.getByTestId('otp-input')).toHaveDisplayValue(''); // emptied for the next try
+    expect(screen.getByTestId('otp-input')).toBeEnabled(); // no wait: the next try at once
   });
 
   it('shows the resend countdown', async () => {
@@ -211,23 +254,9 @@ describe('LoginScreen: code step', () => {
     });
 
     it("Android's back button does nothing during the countdown, then goes back", async () => {
-      type BackHandlerFn = Parameters<typeof ReactNative.BackHandler.addEventListener>[1];
-      const handlers: BackHandlerFn[] = [];
-      jest
-        .spyOn(ReactNative.BackHandler, 'addEventListener')
-        .mockImplementation((_event, handler) => {
-          handlers.push(handler);
-          return { remove: jest.fn() };
-        });
+      const press = captureBackButton();
       const deps = await renderLogin({}, withClock());
       await toCodeStep(deps);
-      const press = async () => {
-        let handled: boolean | null | undefined;
-        await act(async () => {
-          handled = handlers.at(-1)?.({} as never);
-        });
-        return handled;
-      };
 
       expect(await press()).toBe(true); // handled (the app stays), but ignored
       expect(screen.getByTestId('otp-input')).toBeOnTheScreen();
@@ -238,6 +267,143 @@ describe('LoginScreen: code step', () => {
 
       // On the first step back is not handled: Android leaves the app as usual.
       expect(await press()).toBe(false);
+    });
+
+    it('a wait after a wrong code (mocked server field) disables the code until it ends', async () => {
+      const deps = await renderLogin({}, withClock());
+      await toCodeStep(deps);
+      deps.fakeApi.verifyCode.mockRejectedValueOnce(invalidCode(3, { retry_after_seconds: 20 }));
+      await fireEvent.changeText(screen.getByTestId('otp-input'), '000000');
+      expect(await screen.findByText('Wrong code. You can try again in 0:20.')).toBeOnTheScreen();
+      expect(screen.getByTestId('otp-input')).toBeDisabled();
+
+      await tick(15);
+      expect(screen.getByText('Wrong code. You can try again in 0:05.')).toBeOnTheScreen();
+      await tick(5);
+      expect(screen.getByText('Wrong code. Tries left: 3.')).toBeOnTheScreen();
+      expect(screen.getByTestId('otp-input')).toBeEnabled();
+    });
+
+    it('no tries left: the code disabled, resend and Change number count down, a new code opens it', async () => {
+      const deps = await renderLogin({}, withClock());
+      await toCodeStep(deps);
+      await tick(20);
+      deps.fakeApi.verifyCode.mockRejectedValueOnce(tooManyAttempts(40));
+      await fireEvent.changeText(screen.getByTestId('otp-input'), '000000');
+      expect(
+        await screen.findByText('Too many wrong tries. Request a new code.'),
+      ).toBeOnTheScreen();
+      expect(screen.getByTestId('otp-input')).toBeDisabled();
+      expect(screen.getByText('New code in 0:40')).toBeOnTheScreen();
+      expect(screen.getByTestId('code-resend')).toBeDisabled();
+      expect(screen.getByTestId('code-change-number')).toBeDisabled();
+
+      await tick(40);
+      expect(screen.getByTestId('code-resend')).toBeEnabled();
+      expect(screen.getByTestId('code-change-number')).toBeEnabled();
+      expect(screen.getByTestId('otp-input')).toBeDisabled(); // still: this code is used up
+
+      await fireEvent.press(screen.getByTestId('code-resend'));
+      expect(await screen.findByText('New code in 1:00')).toBeOnTheScreen();
+      expect(screen.getByTestId('otp-input')).toBeEnabled();
+      expect(screen.queryByTestId('code-error')).toBeNull();
+    });
+
+    it('a refused resend (number limit) shows the live wait', async () => {
+      const deps = await renderLogin({}, withClock());
+      await toCodeStep(deps);
+      await tick(60);
+      deps.fakeApi.requestCode.mockRejectedValueOnce(rateLimited('phone_hour', 3599));
+      await fireEvent.press(screen.getByTestId('code-resend'));
+      expect(
+        await screen.findByText('You can ask for a new code for this number in 59:59.'),
+      ).toBeOnTheScreen();
+      expect(screen.getByText('New code in 59:59')).toBeOnTheScreen();
+      await tick(1);
+      expect(screen.getByText('New code in 59:58')).toBeOnTheScreen();
+    });
+
+    it('the code expires on screen: an empty phone step saying so', async () => {
+      const deps = await renderLogin({}, withClock());
+      await toCodeStep(deps);
+      await tick(299);
+      expect(screen.getByTestId('otp-input')).toBeOnTheScreen();
+      await tick(1);
+      expect(await screen.findByTestId('phone-input')).toHaveDisplayValue('');
+      expect(
+        screen.getByText('That code has expired. Enter your number to get a new one.'),
+      ).toBeOnTheScreen();
+    });
+
+    it('phone step: a number limit disables Continue for that number only, with a live wait', async () => {
+      const deps = await renderLogin({}, withClock());
+      deps.fakeApi.requestCode.mockRejectedValueOnce(rateLimited('phone_hour', 90));
+      const input = await screen.findByTestId('phone-input');
+      await fireEvent.changeText(input, '0502345678');
+      await fireEvent.press(screen.getByTestId('phone-continue'));
+      expect(
+        await screen.findByText('You can ask for a new code for this number in 1:30.'),
+      ).toBeOnTheScreen();
+      expect(screen.getByTestId('phone-continue')).toBeDisabled();
+      await tick(30);
+      expect(
+        screen.getByText('You can ask for a new code for this number in 1:00.'),
+      ).toBeOnTheScreen();
+
+      await fireEvent.changeText(input, '0531234567'); // another number: allowed
+      expect(screen.getByTestId('phone-continue')).toBeEnabled();
+      await fireEvent.changeText(input, '0502345678');
+      expect(screen.getByTestId('phone-continue')).toBeDisabled();
+      await tick(60);
+      expect(screen.getByTestId('phone-continue')).toBeEnabled();
+    });
+
+    it('phone step: a network limit disables Continue for every number', async () => {
+      const deps = await renderLogin({}, withClock());
+      deps.fakeApi.requestCode.mockRejectedValueOnce(rateLimited('ip_hour', 3599));
+      const input = await screen.findByTestId('phone-input');
+      await fireEvent.changeText(input, '0502345678');
+      await fireEvent.press(screen.getByTestId('phone-continue'));
+      expect(
+        await screen.findByText('Too many code requests from this network. Try again in 59:59.'),
+      ).toBeOnTheScreen();
+      await fireEvent.changeText(input, '0531234567');
+      expect(screen.getByTestId('phone-continue')).toBeDisabled();
+    });
+
+    it('name step: no Change number, the back button does nothing, expiry starts over', async () => {
+      const press = captureBackButton();
+      const deps = await renderLogin({}, withClock());
+      await toCodeStep(deps);
+      deps.fakeApi.verifyCode.mockResolvedValue(registrationRequired);
+      await fireEvent.changeText(screen.getByTestId('otp-input'), '123456');
+      await screen.findByTestId('name-input');
+      expect(screen.queryByText('Change number')).toBeNull();
+
+      expect(await press()).toBe(true); // handled, so the app doesn't close, but nothing happens
+      expect(screen.getByTestId('name-input')).toBeOnTheScreen();
+
+      await tick(600);
+      expect(await screen.findByTestId('phone-input')).toBeOnTheScreen();
+      expect(screen.getByText('That took too long. Verify your number again.')).toBeOnTheScreen();
+    });
+
+    it.each([
+      ['he', 'dark', 'יותר מדי ניסיונות שגויים. יש לבקש קוד חדש.', 'קוד חדש בעוד 0:30'],
+      ['en', 'dark', 'Too many wrong tries. Request a new code.', 'New code in 0:30'],
+      ['he', 'light', 'יותר מדי ניסיונות שגויים. יש לבקש קוד חדש.', 'קוד חדש בעוד 0:30'],
+    ] as const)('the locked code step in %s, %s', async (language, scheme, text, resend) => {
+      const deps = await renderLogin(
+        { language, scheme },
+        testDeps({ locales: [{ languageCode: language }], clock: createClock() }),
+      );
+      await toCodeStep(deps);
+      await tick(30);
+      deps.fakeApi.verifyCode.mockRejectedValueOnce(tooManyAttempts(30));
+      await fireEvent.changeText(screen.getByTestId('otp-input'), '000000');
+      expect(await screen.findByText(text)).toBeOnTheScreen();
+      expect(screen.getByText(resend)).toBeOnTheScreen();
+      expect(screen.getByTestId('otp-input')).toBeDisabled();
     });
 
     it('back, then the same number again: a new code and a fresh countdown', async () => {

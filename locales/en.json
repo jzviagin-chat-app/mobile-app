@@ -23,7 +23,11 @@
       "label": "6-digit code",
       "resend": "Send a new code",
       "resendIn": "New code in {{time}}",
-      "changeNumber": "Change number"
+      "changeNumber": "Change number",
+      "wrong": "Wrong code. Check the SMS and try again.",
+      "wrongTriesLeft": "Wrong code. Tries left: {{count}}.",
+      "wrongWait": "Wrong code. You can try again in {{time}}.",
+      "locked": "Too many wrong tries. Request a new code."
     },
     "name": {
       "title": "What's your name?",
@@ -32,7 +36,7 @@
       "continue": "Continue"
     },
     "notice": {
-      "code_expired": "That code has expired. Request a new one.",
+      "code_expired": "That code has expired. Enter your number to get a new one.",
       "registration_expired": "That took too long. Verify your number again.",
       "already_registered": "This number already has an account. Sign in with a new code.",
       "code_already_sent": "A code was already sent to this number. Enter it, or wait for a new one."
@@ -40,8 +44,7 @@
     "errors": {
       "invalid_phone": "That doesn't look like a mobile number.",
       "country_not_available": "Sign-in isn't available for this country yet.",
-      "rate_limited": "Too many attempts. Try again in {{time}}.",
-      "resend_not_yet": "You can ask for a new code in {{time}}.",
+      "rate_limited": "Too many attempts. Try again in a moment.",
       "sms_unavailable": "We can't send codes right now. Try again later.",
       "invalid_code": "That code is wrong. Check the SMS and try again.",
       "code_expired": "That code has expired. Request a new one.",
@@ -50,7 +53,13 @@
       "registration_expired": "That took too long. Verify your number again.",
       "already_registered": "This number already has an account. Sign in with a new code.",
       "no_connection": "No connection. Check your internet and try again.",
-      "server_error": "Something went wrong. Try again."
+      "server_error": "Something went wrong. Try again.",
+      "too_many_attempts": "Too many wrong tries. Request a new code."
+    },
+    "block": {
+      "number": "You can ask for a new code for this number in {{time}}.",
+      "network": "Too many code requests from this network. Try again in {{time}}.",
+      "sms": "We can't send codes right now. Try again in {{time}}."
     }
   },
   "home": {

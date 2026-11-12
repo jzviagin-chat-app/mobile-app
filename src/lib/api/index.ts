@@ -7,4 +7,12 @@ export {
   type LoggedIn,
   type RegistrationRequired,
 } from './client';
-export { ApiError, NetworkError, errorCodes, type ErrorCode } from './errors';
+export {
+  ApiError,
+  NetworkError,
+  errorCodes,
+  rateLimits,
+  type ErrorCode,
+  type ErrorDetails,
+  type RateLimit,
+} from './errors';

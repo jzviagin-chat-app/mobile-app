@@ -435,14 +435,14 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
-            /** @description rate_limited (see Retry-After) */
+            /** @description rate_limited: `limit` (resend_cooldown, phone_hour, phone_day, ip_hour, ip_day) and `retry_after_seconds` (also the Retry-After header) */
             429: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description sms_unavailable */
+            /** @description sms_unavailable (Retry-After when the daily SMS cap is reached) */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -473,7 +473,7 @@ export interface operations {
                     "application/json": components["schemas"]["LoggedInOut"] | components["schemas"]["RegistrationRequiredOut"];
                 };
             };
-            /** @description invalid_phone, unsupported_platform, invalid_code (retry), code_expired (request a new one) */
+            /** @description invalid_phone, unsupported_platform, invalid_code (retry; `attempts_left`), too_many_attempts and code_expired (request a new one). The code errors add `resend_after_seconds` (0: now) when it can be read */
             400: {
                 headers: {
                     [name: string]: unknown;

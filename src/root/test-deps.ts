@@ -1,5 +1,5 @@
 // Fakes for tests: a RootStore built from these touches no network, no secure storage and no device APIs.
-import type { LoginProgress } from '@/features/auth';
+import type { LoginProgress, SendBlocks } from '@/features/auth';
 import type { AuthApi } from '@/lib/api';
 import type { Clock } from '@/lib/clock';
 import type { SecureItem } from '@/lib/secure-item';
@@ -59,6 +59,7 @@ export function testDeps(overrides: Partial<RootStoreDeps> = {}) {
     api: api as unknown as AuthApi,
     tokenStorage: memoryItem<StoredTokens>(),
     loginProgress: memoryItem<LoginProgress>(),
+    sendBlocks: memoryItem<SendBlocks>(),
     device: { platform: 'android', name: 'Test phone' },
     clock: testClock,
     isFirstLaunchAfterInstall: () => false,

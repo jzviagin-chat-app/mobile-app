@@ -2,7 +2,7 @@ import { getLocales } from 'expo-localization';
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { I18nextProvider } from 'react-i18next';
 
-import { createLoginProgressStorage } from '@/features/auth';
+import { createLoginProgressStorage, createSendBlocksStorage } from '@/features/auth';
 import { createAuthApi } from '@/lib/api';
 import { createClock } from '@/lib/clock';
 import { getConfig } from '@/lib/config';
@@ -21,6 +21,7 @@ function realDeps(): RootStoreDeps {
     api: createAuthApi({ baseUrl: getConfig().apiUrl }),
     tokenStorage: createTokenStorage(),
     loginProgress: createLoginProgressStorage(),
+    sendBlocks: createSendBlocksStorage(),
     device: getDeviceInfo(),
     clock: createClock(),
     isFirstLaunchAfterInstall,

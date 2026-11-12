@@ -104,6 +104,83 @@ describe('createAuthApi', () => {
     });
   });
 
+  // The exact answers from auth-service#14 (local ENVIRONMENT=dev server).
+  it('reads the 429 limit and wait from the body', async () => {
+    const { fetch } = fakeFetch(() =>
+      json(
+        429,
+        {
+          error: 'rate_limited',
+          message: 'Too many code requests; try again later',
+          limit: 'phone_hour',
+          retry_after_seconds: 3599,
+        },
+        { 'Retry-After': '3599' },
+      ),
+    );
+    const error = (await api(fetch)
+      .requestCode('+972502345678')
+      .catch((e: unknown) => e)) as ApiError;
+    expect(error.details).toEqual({ limit: 'phone_hour', retryAfterSeconds: 3599 });
+  });
+
+  it.each([
+    [
+      {
+        error: 'invalid_code',
+        message: 'Wrong code; 4 attempts left',
+        attempts_left: 4,
+        resend_after_seconds: 60,
+      },
+      { attemptsLeft: 4, resendAfterSeconds: 60 },
+    ],
+    [
+      { error: 'too_many_attempts', message: 'Too many wrong tries', resend_after_seconds: 60 },
+      { resendAfterSeconds: 60 },
+    ],
+    [
+      {
+        error: 'code_expired',
+        message: "This code can't be used anymore",
+        resend_after_seconds: 0,
+      },
+      { resendAfterSeconds: 0 },
+    ],
+  ])('reads the verify error fields of %j', async (body, details) => {
+    const { fetch } = fakeFetch(() => json(400, body));
+    const error = (await api(fetch)
+      .verifyCode('+972502345678', '000000', device)
+      .catch((e: unknown) => e)) as ApiError;
+    expect(error.code).toBe(body.error);
+    expect(error.details).toEqual(details);
+  });
+
+  it('drops wrong or unknown field values instead of trusting them', async () => {
+    const { fetch } = fakeFetch(() =>
+      json(429, {
+        error: 'rate_limited',
+        limit: 'galaxy_day',
+        retry_after_seconds: -5,
+        attempts_left: '3',
+        resend_after_seconds: 1.5,
+      }),
+    );
+    const error = (await api(fetch)
+      .requestCode('+972502345678')
+      .catch((e: unknown) => e)) as ApiError;
+    expect(error.details).toEqual({});
+  });
+
+  it('the daily SMS cap: 503 with Retry-After only in the header', async () => {
+    const { fetch } = fakeFetch(() =>
+      json(503, { error: 'sms_unavailable', message: "Can't send" }, { 'Retry-After': '2133' }),
+    );
+    await expect(api(fetch).requestCode('+972502345678')).rejects.toMatchObject({
+      code: 'sms_unavailable',
+      retryAfterSeconds: 2133,
+    });
+  });
+
   it('maps a non-JSON error (e.g. a proxy 502 page) to unknown', async () => {
     const { fetch } = fakeFetch(() => new Response('<html>Bad gateway</html>', { status: 502 }));
     await expect(api(fetch).requestCode('+972502345678')).rejects.toMatchObject({

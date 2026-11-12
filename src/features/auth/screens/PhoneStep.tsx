@@ -9,7 +9,8 @@ import { Button, measureInWindow, Screen, Text, TextField, useTheme } from '@/ui
 import { getCountry } from '../countries';
 import type { LoginResult } from '../errors';
 import type { LoginFlowStore } from '../login-flow-store';
-import { formatAsYouType } from '../phone';
+import { formatAsYouType, toE164 } from '../phone';
+import { blockText } from './blockText';
 import { CountryDropdown, type Anchor } from './CountryDropdown';
 import { useLoginError } from './useLoginError';
 
@@ -27,7 +28,10 @@ export const PhoneStep = observer(function PhoneStep({ login }: { login: LoginFl
     (_previous, phone) => login.requestCode(phone),
     null,
   );
-  const error = useLoginError(result);
+  const resultError = useLoginError(result);
+  // A running send block for this number (or every number) disables Continue, with a live countdown.
+  const block = login.blockFor(toE164(login.country, text));
+  const error = block ? blockText(t, block) : resultError;
 
   function onChangeText(next: string) {
     // Format only while the number grows: re-formatting on delete would put back the dash just removed.
@@ -48,7 +52,7 @@ export const PhoneStep = observer(function PhoneStep({ login }: { login: LoginFl
           testID="phone-continue"
           title={t('auth.phone.continue')}
           loading={pending}
-          disabled={text.trim().length === 0}
+          disabled={text.trim().length === 0 || block !== null}
           onPress={() => startTransition(() => submit(text))}
         />
       }
