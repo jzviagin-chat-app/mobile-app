@@ -466,6 +466,31 @@ describe('LoginScreen: code step', () => {
       expect(screen.getByTestId('code-change-number')).toBeEnabled();
     });
 
+    it.each([
+      ['en', 'That code has expired. Request a new one.'],
+      ['he', 'תוקף הקוד פג. יש לבקש קוד חדש.'],
+    ])(
+      'code_expired in %s: stays on the code step with the message, typing allowed',
+      async (language, text) => {
+        const deps = await renderLogin(
+          { language },
+          testDeps({ clock: createClock(), locales: [{ languageCode: language }] }),
+        );
+        await toCodeStep(deps);
+        deps.fakeApi.verifyCode.mockRejectedValueOnce(
+          server(400, { error: 'code_expired', message: '…', resend_after_seconds: 50 }),
+        );
+        await fireEvent.changeText(screen.getByTestId('otp-input'), '123456');
+        expect(await screen.findByText(text)).toBeOnTheScreen();
+        expect(screen.getByTestId('otp-input')).toBeEnabled();
+        expect(screen.getByTestId('code-change-number')).toBeEnabled();
+        await tick(60);
+        await fireEvent.press(screen.getByTestId('code-resend'));
+        await screen.findByText(language === 'en' ? 'New code in 1:00' : 'קוד חדש בעוד 1:00');
+        expect(screen.queryByText(text)).toBeNull(); // a new code: the message is gone
+      },
+    );
+
     it('a device lock still takes a code that arrives late: it signs in', async () => {
       const deps = await renderLogin({}, withClock());
       await toCodeStep(deps);

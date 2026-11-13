@@ -434,15 +434,35 @@ describe('LoginFlowStore: code step', () => {
     expect(login.canGoBack).toBe(true);
   });
 
-  it('code_expired from the server: an empty phone step, the resend wait kept for that number', async () => {
+  it('code_expired from the server: stays on the code step and says so (owner, 2026-11-13)', async () => {
     const { login, api, progress } = await onCodeStep();
-    api.verifyCode.mockRejectedValue(codeExpired(30));
-    await login.verifyCode('123456');
-    expect(login.step).toBe('phone');
-    expect(login.phone).toBeNull();
-    expect(login.notice).toBe('code_expired');
-    expect(progress.value).toBeNull();
-    expect(login.blockFor(PHONE)).toEqual({ reason: 'number', seconds: 60 }); // the 202's 60 s
+    api.verifyCode.mockRejectedValueOnce(codeExpired(30));
+    await expect(login.verifyCode('123456')).resolves.toEqual({
+      ok: false,
+      error: { code: 'code_expired' },
+    });
+    expect(login.step).toBe('code');
+    expect(login.phone).toBe(PHONE);
+    expect(login.codeState).toBe('expired');
+    expect(login.canEnterCode).toBe(true); // a newer code may still arrive
+    expect(login.canGoBack).toBe(true);
+    expect(login.secondsUntilResend).toBe(60); // the 202's 60 s still runs
+    expect(progress.value).toMatchObject({ step: 'code', codeState: 'expired' });
+
+    // A new code clears it.
+    advance(60);
+    await login.resendCode();
+    expect(login.codeState).toBe('active');
+  });
+
+  it('code_expired survives closing the app', async () => {
+    const first = await onCodeStep();
+    first.api.verifyCode.mockRejectedValueOnce(codeExpired(30));
+    await first.login.verifyCode('123456');
+    advance(10);
+    const { login } = await reopen(first);
+    expect(login.step).toBe('code');
+    expect(login.codeState).toBe('expired');
   });
 
   it('retries once on login_conflict', async () => {

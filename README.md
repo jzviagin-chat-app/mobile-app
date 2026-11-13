@@ -293,9 +293,12 @@ phone ──requestCode──► code ──verify: logged_in──────�
   code) beats the cooldown a verify error reports.
 - **Expiry starts over** (owner, 2026-11-12): when the code or the registration token expires, an empty
   phone step with a notice: while the app is open (a reaction on the clock, also right after the app
-  returns from the background), at startup, or when the server says so (`code_expired`,
-  `invalid_registration_token`). Every deadline is an absolute time on the phone's clock, so time spent
+  returns from the background), at startup, or when the server rejects the registration token
+  (`invalid_registration_token`). Every deadline is an absolute time on the phone's clock, so time spent
   closed counts: reopened inside the window, the step resumes with only the time left.
+- **A server `code_expired` keeps the code step** (owner, 2026-11-13): "That code has expired. Request a
+  new one.", typing still allowed and the buttons as usual; a new code clears it. (The server gives the
+  same answer for an expired, a used and a missing code.)
 - **Refused code requests are shown live and remembered; a refusal never moves the login on.**
   `429 rate_limited` names its `limit`: `resend_cooldown`, `phone_hour` and `phone_day` block that number
   (Continue disabled while it's typed; other numbers work); `ip_hour` / `ip_day` and the daily SMS cap

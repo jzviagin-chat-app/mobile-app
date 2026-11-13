@@ -10,7 +10,7 @@ const progressSchema = z.object({
   /** Unix ms on the phone's clock. */
   codeExpiresAt: z.number().nullable(),
   /** `too_many_attempts`: the code is used up; the field stays disabled until a new code is sent. */
-  codeState: z.enum(['active', 'too_many_attempts']),
+  codeState: z.enum(['active', 'too_many_attempts', 'expired']),
   attemptsLeft: z.number().nullable(),
   /** When the next try is allowed, if the server asked to wait after a wrong code. */
   codeRetryAvailableAt: z.number().nullable(),

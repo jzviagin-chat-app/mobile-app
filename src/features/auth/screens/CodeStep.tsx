@@ -13,7 +13,12 @@ import { formatDuration, ltr } from './format';
 import { useLoginError } from './useLoginError';
 
 /** Verify answers the screen shows live from the store (they change with the clock or the next try). */
-const LIVE_VERIFY_ERRORS = new Set(['invalid_code', 'too_many_attempts', 'blocked']);
+const LIVE_VERIFY_ERRORS = new Set([
+  'invalid_code',
+  'too_many_attempts',
+  'code_expired',
+  'blocked',
+]);
 
 export const CodeStep = observer(function CodeStep({ login }: { login: LoginFlowStore }) {
   const { t } = useTranslation();
@@ -108,6 +113,7 @@ export const CodeStep = observer(function CodeStep({ login }: { login: LoginFlow
 /** The live message about this code: too many tries, or a wrong code (and any wait before the next try). */
 function codeMessage(t: TFunction, login: LoginFlowStore, wrongCode: boolean): string | null {
   if (login.codeState === 'too_many_attempts') return t('auth.code.locked');
+  if (login.codeState === 'expired') return t('auth.errors.code_expired');
   const retry = login.secondsUntilCodeRetry;
   if (retry > 0) return t('auth.code.wrongWait', { time: formatDuration(retry) });
   if (login.attemptsLeft !== null) {

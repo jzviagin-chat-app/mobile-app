@@ -16,8 +16,12 @@ export type LoginStep = 'phone' | 'code' | 'name';
 /** A message shown on the step the user lands on after the flow moved them (e.g. back to the phone). */
 export type LoginNotice = 'code_expired' | 'registration_expired' | 'already_registered';
 
-/** `too_many_attempts`: this code can't be used any more; a new one must be requested. */
-export type CodeState = 'active' | 'too_many_attempts';
+/**
+ * `too_many_attempts`: this code can't be used any more; a new one must be requested (typing disabled).
+ * `expired`: the server said `code_expired`; the user is told so and stays on the code step (owner,
+ * 2026-11-13), typing still allowed (a newer code may arrive).
+ */
+export type CodeState = 'active' | 'too_many_attempts' | 'expired';
 
 /** Why sending a code is blocked right now (shown with a live countdown). */
 export type SendBlock = { reason: 'number' | 'network' | 'sms'; seconds: number };
@@ -142,7 +146,7 @@ export class LoginFlowStore {
 
   /** The code field is usable: tries left and no wait running. */
   get canEnterCode(): boolean {
-    return this.codeState === 'active' && this.secondsUntilCodeRetry === 0;
+    return this.codeState !== 'too_many_attempts' && this.secondsUntilCodeRetry === 0;
   }
 
   /** "Change number": any time on the code step, unless the device is locked; never from the name step. */
@@ -351,7 +355,10 @@ export class LoginFlowStore {
         yield this.save();
         return fail('too_many_attempts');
       case 'code_expired':
-        yield this.expire('code');
+        // Stay on the code step and say so: the number is right, a new code is one tap away.
+        this.codeState = 'expired';
+        this.codeRetryAvailableAt = null;
+        yield this.save();
         return fail('code_expired');
       default:
         return null;
