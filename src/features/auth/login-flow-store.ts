@@ -14,8 +14,7 @@ import { activeBlocks, noBlocks, type SendBlocks, type SendBlocksStorage } from 
 export type LoginStep = 'phone' | 'code' | 'name';
 
 /** A message shown on the step the user lands on after the flow moved them (e.g. back to the phone). */
-export type LoginNotice =
-  'code_expired' | 'registration_expired' | 'already_registered' | 'code_already_sent';
+export type LoginNotice = 'code_expired' | 'registration_expired' | 'already_registered';
 
 /** `too_many_attempts`: this code can't be used any more; a new one must be requested. */
 export type CodeState = 'active' | 'too_many_attempts';
@@ -33,12 +32,6 @@ export type LoginFlowDeps = {
   clock: Clock;
 };
 
-/**
- * A `429 resend_cooldown` on the phone step hides the code's timers: it was sent within the last minute and
- * lives 5 minutes, so at least 4 are left (auth-service's OTP_TTL_SECONDS / cooldown). The server stays the
- * authority: an expired code answers `code_expired`.
- */
-const CODE_LEFT_AFTER_COOLDOWN_MS = 4 * 60_000;
 const NAME_MAX = 50;
 
 /**
@@ -59,6 +52,10 @@ const NAME_MAX = 50;
  *   phone's clock, so time the app spent closed counts too.
  * - The code and name steps are saved after every change; the server's send blocks in their own item. Every
  *   wait survives a restart.
+ * - Each number's wait for a new code is also a send block, so it outlives the code step: after sign-in,
+ *   sign-out, back or expiry, that number shows the countdown instead of asking the server. A refused
+ *   request (`429 resend_cooldown` included) never moves the flow on: the app can't know whether a code is
+ *   waiting, so it shows the wait (owner, 2026-11-13).
  *
  * Every action returns a LoginResult and never throws.
  */
@@ -300,26 +297,17 @@ export class LoginFlowStore {
     return null;
   }
 
-  /** The code / registration token expired: start over, keeping the number's resend wait as a block. */
+  /** The code / registration token expired: start over (the number's resend wait stays a send block). */
   private expire = flow(function* (this: LoginFlowStore, what: 'code' | 'name') {
-    const phone = this.phone;
-    const resendAt = this.resendAvailableAt;
     yield this.startOver(what === 'code' ? 'code_expired' : 'registration_expired');
-    if (phone && resendAt !== null && resendAt > Date.now()) {
-      yield this.blockNumber(phone, resendAt);
-    }
   });
 
   /** The verify errors this flow handles itself (null: not one of them). */
   private codeRefused = flow(function* (this: LoginFlowStore, error: ApiError) {
     const now = Date.now();
     const { attemptsLeft, resendAfterSeconds, retryAfterSeconds } = error.details;
-    // Only ever later: after the hour's last code the 202's wait is longer than the cooldown reported here.
-    if (resendAfterSeconds !== undefined) {
-      this.resendAvailableAt = Math.max(
-        this.resendAvailableAt ?? 0,
-        now + resendAfterSeconds * 1000,
-      );
+    if (resendAfterSeconds !== undefined && this.phone) {
+      yield this.waitForResend(this.phone, now + resendAfterSeconds * 1000);
     }
     switch (error.code) {
       case 'invalid_code':
@@ -344,40 +332,25 @@ export class LoginFlowStore {
 
   private sendCode = flow(function* (this: LoginFlowStore, phone: string) {
     const now = Date.now();
-    const wasOnCode = this.step === 'code';
     try {
       const sent: Awaited<ReturnType<LoginFlowDeps['api']['requestCode']>> =
         yield this.deps.api.requestCode(phone);
-      this.toCode(
-        phone,
-        now + sent.resend_after_seconds * 1000,
-        now + sent.expires_in_seconds * 1000,
-      );
+      this.toCode(phone, now + sent.expires_in_seconds * 1000);
       this.clearCodeAttempts();
-      yield this.save();
+      yield this.waitForResend(phone, now + sent.resend_after_seconds * 1000);
       return ok;
     } catch (error) {
       if (!(error instanceof ApiError)) return toLoginError(error);
       const wait = error.retryAfterSeconds;
       if (error.code === 'rate_limited' && wait !== undefined) {
         const until = now + wait * 1000;
-        if (error.details.limit === 'resend_cooldown') {
-          if (wasOnCode) {
-            this.resendAvailableAt = until;
-            yield this.save();
-            return fail('blocked');
-          }
-          // A code went out under a minute ago (e.g. before a reinstall) and is still valid: enter it.
-          this.toCode(phone, until, now + CODE_LEFT_AFTER_COOLDOWN_MS);
-          this.clearCodeAttempts();
-          this.notice = 'code_already_sent';
-          yield this.save();
-          return ok;
-        }
         if (error.details.limit === 'ip_hour' || error.details.limit === 'ip_day') {
           yield this.blockAll('network', until);
         } else {
-          yield this.blockNumber(phone, until); // phone_hour / phone_day (or no limit named)
+          // resend_cooldown (a code went out within the last minute: maybe before a lost reply, a reinstall
+          // or a sign-in; whether it can still be used is unknown, so wait instead of guessing), phone_hour,
+          // phone_day, or no limit named. The flow stays where it is.
+          yield this.waitForResend(phone, until);
         }
         return fail('blocked');
       }
@@ -389,12 +362,25 @@ export class LoginFlowStore {
     }
   });
 
-  private toCode(phone: string, resendAvailableAt: number, codeExpiresAt: number): void {
+  private toCode(phone: string, codeExpiresAt: number): void {
     this.phone = phone;
-    this.resendAvailableAt = resendAvailableAt;
+    this.resendAvailableAt = null; // set by waitForResend
     this.codeExpiresAt = codeExpiresAt;
     this.step = 'code';
   }
+
+  /**
+   * When this number may get a new code: a send block (outlives the code step, see the class comment) and, on
+   * the code step, its resend countdown. Only ever later: after the hour's last code the 202's wait is longer
+   * than the cooldown a verify error reports.
+   */
+  private waitForResend = flow(function* (this: LoginFlowStore, phone: string, until: number) {
+    yield this.blockNumber(phone, until);
+    if (this.step === 'code' && this.phone === phone) {
+      this.resendAvailableAt = Math.max(this.resendAvailableAt ?? 0, until);
+      yield this.save();
+    }
+  });
 
   /** A fresh code: typing allowed again. */
   private clearCodeAttempts(): void {
@@ -411,13 +397,7 @@ export class LoginFlowStore {
 
   private finish = flow(function* (this: LoginFlowStore, reply: LoggedIn) {
     yield this.deps.completeLogin(tokensFromReply(reply, Date.now()));
-    yield this.reset();
-    this.blocks = noBlocks;
-    try {
-      yield this.deps.blocks.clear();
-    } catch {
-      log.warn('Could not clear the send blocks');
-    }
+    yield this.reset(); // the send blocks stay: after a sign-out the number still waits (owner, 2026-11-13)
   });
 
   /** Back to an empty phone step, with a message saying why. */
@@ -440,6 +420,8 @@ export class LoginFlowStore {
 
   private blockNumber = flow(function* (this: LoginFlowStore, phone: string, until: number) {
     const current = activeBlocks(this.blocks, Date.now());
+    const existing = current.numbers.find((block) => block.phone === phone);
+    if (existing && existing.until >= until) return; // only ever later
     const numbers = current.numbers.filter((block) => block.phone !== phone);
     yield this.saveBlocks({ ...current, numbers: [...numbers, { phone, until }] });
   });

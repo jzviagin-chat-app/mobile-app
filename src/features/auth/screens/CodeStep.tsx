@@ -73,9 +73,6 @@ export const CodeStep = observer(function CodeStep({ login }: { login: LoginFlow
       <Text muted>
         {t('auth.code.subtitle', { phone: ltr(formatNational(login.phone ?? '')) })}
       </Text>
-      {login.notice === 'code_already_sent' ? (
-        <Text>{t('auth.notice.code_already_sent')}</Text>
-      ) : null}
       <OtpInput
         label={t('auth.code.label')}
         value={code}
@@ -94,10 +91,13 @@ export const CodeStep = observer(function CodeStep({ login }: { login: LoginFlow
   );
 });
 
-/** The live message for this code: a send block, too many tries, or a wrong code (and any wait). */
+/**
+ * The live message for this code: a block on every number, too many tries, or a wrong code (and any wait).
+ * This number's own wait is already counted down on the resend button.
+ */
 function codeMessage(t: TFunction, login: LoginFlowStore, wrongCode: boolean): string | null {
   const block = login.blockFor(login.phone);
-  if (block) return blockText(t, block);
+  if (block && block.reason !== 'number') return blockText(t, block);
   if (login.codeState === 'too_many_attempts') return t('auth.code.locked');
   const retry = login.secondsUntilCodeRetry;
   if (retry > 0) return t('auth.code.wrongWait', { time: formatDuration(retry) });

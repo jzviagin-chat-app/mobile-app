@@ -5,15 +5,16 @@ import { createSecureItem, type SecureItem } from '@/lib/secure-item';
 const sendBlocksSchema = z.object({
   /** Every number is blocked: this network's limit (`ip_*`) or the server's daily SMS cap. */
   all: z.object({ reason: z.enum(['network', 'sms']), until: z.number() }).nullable(),
-  /** One number is blocked: its hourly / daily limit, or a resend wait left from an expired code. */
+  /** One number is blocked: its wait for a new code (202 / verify errors / 429 resend_cooldown) or limit. */
   numbers: z.array(z.object({ phone: z.string(), until: z.number() })),
 });
 
 /**
  * When the server will send a code again (Unix ms, phone clock), from its 429 / 503 answers. Saved in its own
  * secure item, apart from the login progress: these are the server's facts, so going back to the phone step
- * doesn't clear them (owner decision 2026-11-12: every wait survives a restart). Cleared on sign-in; expired
- * entries are dropped whenever the blocks are read or changed.
+ * doesn't clear them (owner decision 2026-11-12: every wait survives a restart), and neither do sign-in and
+ * sign-out (2026-11-13). Cleared only by a fresh install; expired entries are dropped whenever the blocks are
+ * read or changed.
  */
 export type SendBlocks = z.infer<typeof sendBlocksSchema>;
 export type SendBlocksStorage = SecureItem<SendBlocks>;

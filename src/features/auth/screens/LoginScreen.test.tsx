@@ -16,6 +16,13 @@ jest.mock('@/ui/measure', () => ({
 }));
 
 const codeSent = { resend_after_seconds: 60, expires_in_seconds: 300 };
+const loggedIn = {
+  status: 'logged_in',
+  access_token: 'access-1',
+  token_type: 'Bearer',
+  expires_in: 900,
+  refresh_token: 'refresh-1',
+} as const;
 const registrationRequired = {
   status: 'registration_required',
   registration_token: 'reg',
@@ -309,16 +316,15 @@ describe('LoginScreen: code step', () => {
       expect(screen.queryByTestId('code-error')).toBeNull();
     });
 
-    it('a refused resend (number limit) shows the live wait', async () => {
+    it('a refused resend (number limit) counts down on the resend button', async () => {
       const deps = await renderLogin({}, withClock());
       await toCodeStep(deps);
       await tick(60);
       deps.fakeApi.requestCode.mockRejectedValueOnce(rateLimited('phone_hour', 3599));
       await fireEvent.press(screen.getByTestId('code-resend'));
-      expect(
-        await screen.findByText('You can ask for a new code for this number in 59:59.'),
-      ).toBeOnTheScreen();
-      expect(screen.getByText('New code in 59:59')).toBeOnTheScreen();
+      expect(await screen.findByText('New code in 59:59')).toBeOnTheScreen();
+      expect(screen.getByTestId('code-resend')).toBeDisabled();
+      expect(screen.queryByTestId('code-error')).toBeNull(); // the button already says it
       await tick(1);
       expect(screen.getByText('New code in 59:58')).toBeOnTheScreen();
     });
@@ -355,6 +361,46 @@ describe('LoginScreen: code step', () => {
       await fireEvent.changeText(input, '0502345678');
       expect(screen.getByTestId('phone-continue')).toBeDisabled();
       await tick(60);
+      expect(screen.getByTestId('phone-continue')).toBeEnabled();
+    });
+
+    it.each([
+      ['en', 'You can ask for a new code for this number in 0:42.', 'Continue'],
+      ['he', 'אפשר לבקש קוד חדש למספר הזה בעוד 0:42.', 'המשך'],
+    ])(
+      'phone step in %s: a cooldown refusal stays there, Continue disabled with a live timer',
+      async (language, text, button) => {
+        const deps = await renderLogin(
+          { language },
+          testDeps({ clock: createClock(), locales: [{ languageCode: language }] }),
+        );
+        deps.fakeApi.requestCode.mockRejectedValueOnce(rateLimited('resend_cooldown', 42));
+        await fireEvent.changeText(await screen.findByTestId('phone-input'), '0502345678');
+        await fireEvent.press(screen.getByTestId('phone-continue'));
+        expect(await screen.findByText(text)).toBeOnTheScreen();
+        expect(screen.queryByTestId('otp-input')).toBeNull(); // no code step
+        expect(screen.getByRole('button', { name: button })).toBeDisabled();
+        await tick(42);
+        expect(screen.getByTestId('phone-continue')).toBeEnabled();
+        expect(screen.queryByText(text)).toBeNull();
+      },
+    );
+
+    it('signed in, then the same number again: Continue waits for the countdown, no request', async () => {
+      const deps = await renderLogin({}, withClock());
+      await toCodeStep(deps);
+      await tick(10);
+      deps.fakeApi.verifyCode.mockResolvedValue(loggedIn);
+      await fireEvent.changeText(screen.getByTestId('otp-input'), '123456');
+      const input = await screen.findByTestId('phone-input'); // the flow is reset after sign-in
+      await fireEvent.changeText(input, '0502345678');
+      expect(
+        screen.getByText('You can ask for a new code for this number in 0:50.'),
+      ).toBeOnTheScreen();
+      expect(screen.getByTestId('phone-continue')).toBeDisabled();
+      await fireEvent.press(screen.getByTestId('phone-continue'));
+      expect(deps.fakeApi.requestCode).toHaveBeenCalledTimes(1);
+      await tick(50);
       expect(screen.getByTestId('phone-continue')).toBeEnabled();
     });
 

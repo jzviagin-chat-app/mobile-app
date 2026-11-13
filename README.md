@@ -296,13 +296,19 @@ phone ──requestCode──► code ──verify: logged_in──────�
   returns from the background), at startup, or when the server says so (`code_expired`,
   `invalid_registration_token`). Every deadline is an absolute time on the phone's clock, so time spent
   closed counts: reopened inside the window, the step resumes with only the time left.
-- **Refused code requests are shown live and remembered.** `429 rate_limited` names its `limit`:
-  `resend_cooldown` on the phone step goes to the code step ("a code was already sent", e.g. after a
-  reinstall); `phone_hour` / `phone_day` block that number (Continue disabled while it's typed; other
-  numbers work); `ip_hour` / `ip_day` and the daily SMS cap (`503` + `Retry-After`) block every number.
-  Each shows "try again in 47:12", counting down. These blocks are kept in their own secure item
-  (`send-blocks`), apart from the login progress: going back doesn't clear them, signing in does, and
-  expired ones are dropped. A resend wait still running when a code expires becomes a block for that number.
+- **Refused code requests are shown live and remembered; a refusal never moves the login on.**
+  `429 rate_limited` names its `limit`: `resend_cooldown`, `phone_hour` and `phone_day` block that number
+  (Continue disabled while it's typed; other numbers work); `ip_hour` / `ip_day` and the daily SMS cap
+  (`503` + `Retry-After`) block every number. Each shows "try again in 47:12", counting down from the
+  server's wait. A `resend_cooldown` on the phone step means a code went out within the minute (a lost
+  reply, a reinstall, a sign-in on another phone): whether it can still be used is unknown, so the app
+  waits instead of opening the code step (owner, 2026-11-13).
+- **Each number's wait for a new code outlives the login** (owner, 2026-11-13). Every wait the server
+  gives (the 202's `resend_after_seconds`, the verify errors', a 429's) is also a block for that number, so
+  after signing in and out, going back or an expiry, that number counts down on the phone step without
+  asking the server. On the code step the resend button shows it. These blocks are kept in their own
+  secure item (`send-blocks`), apart from the login progress: going back, signing in and signing out don't
+  clear them, a block only ever gets later, and expired ones are dropped. Only a fresh install clears them.
 - **The code and name steps survive closing the app:** `{country, step, phone, resend / code expiry, code
   state, tries left, registration token}` is saved in its own secure-store item after every change on those
   steps and restored at startup while the code / registration token is still valid. The phone step is

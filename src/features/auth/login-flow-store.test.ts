@@ -137,15 +137,30 @@ describe('LoginFlowStore: phone step', () => {
     expect(api.requestCode).not.toHaveBeenCalled();
   });
 
-  it('429 resend_cooldown goes to the code step: a code was just sent', async () => {
-    const { login, api } = setup();
-    api.requestCode.mockRejectedValue(rateLimited('resend_cooldown', 42));
+  it('429 resend_cooldown stays on the phone step: that number waits, nothing is guessed', async () => {
+    // E.g. the reply to the first request was lost, or the app was reinstalled: a code may or may not be
+    // waiting, so the app doesn't open the code step (owner, 2026-11-13).
+    const { login, api, blocks } = setup();
+    api.requestCode.mockRejectedValueOnce(rateLimited('resend_cooldown', 42));
 
+    await expect(login.requestCode(PHONE)).resolves.toEqual({
+      ok: false,
+      error: { code: 'blocked' },
+    });
+
+    expect(login.step).toBe('phone');
+    expect(login.notice).toBeNull();
+    expect(login.blockFor(PHONE)).toEqual({ reason: 'number', seconds: 42 });
+    expect(login.blockFor(OTHER)).toBeNull();
+    expect(blocks.value?.numbers).toEqual([{ phone: PHONE, until: Date.now() + 42_000 }]);
+    await login.requestCode(PHONE);
+    expect(api.requestCode).toHaveBeenCalledTimes(1); // no second request while it runs
+
+    advance(42);
+    expect(login.blockFor(PHONE)).toBeNull();
+    api.requestCode.mockResolvedValueOnce(codeSent);
     await expect(login.requestCode(PHONE)).resolves.toEqual({ ok: true });
-
     expect(login.step).toBe('code');
-    expect(login.notice).toBe('code_already_sent');
-    expect(login.secondsUntilResend).toBe(42);
   });
 
   it('429 phone_hour blocks only that number, with the countdown, and without new requests', async () => {
@@ -298,7 +313,7 @@ describe('LoginFlowStore: back, resend and the countdown', () => {
 });
 
 describe('LoginFlowStore: code step', () => {
-  it('a known number signs in: tokens handed over, the flow reset, blocks and progress cleared', async () => {
+  it('a known number signs in: tokens handed over, the flow reset and the progress cleared', async () => {
     const { login, api, completeLogin, progress, blocks } = await onCodeStep();
     api.verifyCode.mockResolvedValue(loggedIn);
 
@@ -312,7 +327,8 @@ describe('LoginFlowStore: code step', () => {
     });
     expect(login.step).toBe('phone');
     expect(progress.value).toBeNull();
-    expect(blocks.value).toBeNull();
+    // The number's wait for a new code stays (see "after signing in" below).
+    expect(blocks.value?.numbers).toEqual([{ phone: PHONE, until: Date.now() + 60_000 }]);
   });
 
   it('a new number moves to the name step with the registration token', async () => {
@@ -484,6 +500,102 @@ describe('LoginFlowStore: name step', () => {
     await login.register('Jacob');
     const logged = JSON.stringify(spies.map((spy) => spy.mock.calls));
     expect(logged).not.toContain('reg-secret-token-value-123');
+  });
+});
+
+// Owner, 2026-11-13: sign in, sign out and enter the same number within the minute. The server refuses
+// (resend_cooldown), so the app must already know the wait and show it, without a request.
+describe('LoginFlowStore: the wait for a new code outlives the login', () => {
+  it('after signing in and out, the same number counts down without a request', async () => {
+    const { login, api } = await onCodeStep();
+    advance(9);
+    api.verifyCode.mockResolvedValue(loggedIn);
+    await login.verifyCode('123456');
+    advance(6); // signed out again (the session's business; the flow is already reset)
+
+    expect(login.step).toBe('phone');
+    expect(login.blockFor(PHONE)).toEqual({ reason: 'number', seconds: 45 });
+    await expect(login.requestCode(PHONE)).resolves.toEqual({
+      ok: false,
+      error: { code: 'blocked' },
+    });
+    expect(api.requestCode).toHaveBeenCalledTimes(1);
+
+    // Another number isn't affected.
+    api.requestCode.mockResolvedValueOnce(codeSent);
+    await expect(login.requestCode('053-123-4567')).resolves.toEqual({ ok: true });
+  });
+
+  it('after the wait, the same number gets a new code at once', async () => {
+    const { login, api } = await onCodeStep();
+    api.verifyCode.mockResolvedValue(loggedIn);
+    await login.verifyCode('123456');
+    advance(60);
+    expect(login.blockFor(PHONE)).toBeNull();
+    api.requestCode.mockResolvedValueOnce(codeSent);
+    await expect(login.requestCode(PHONE)).resolves.toEqual({ ok: true });
+    expect(api.requestCode).toHaveBeenCalledTimes(2);
+  });
+
+  it('a new number: the wait survives the name step and the sign-up', async () => {
+    const { login, api } = await onCodeStep();
+    api.verifyCode.mockResolvedValue(registrationRequired);
+    await login.verifyCode('123456');
+    api.register.mockResolvedValue(loggedIn);
+    advance(20);
+    await login.register('Dana');
+    expect(login.blockFor(PHONE)).toEqual({ reason: 'number', seconds: 40 });
+  });
+
+  it("an hour's wait from the 202 (the window's last code) is kept the same way", async () => {
+    const { login, api } = await onCodeStep({
+      resend_after_seconds: 3540,
+      expires_in_seconds: 300,
+    });
+    api.verifyCode.mockResolvedValue(loggedIn);
+    await login.verifyCode('123456');
+    expect(login.blockFor(PHONE)).toEqual({ reason: 'number', seconds: 3540 });
+  });
+
+  it('a verify error that moves the wait later moves the kept wait too', async () => {
+    const { login, api } = await onCodeStep();
+    api.verifyCode.mockRejectedValueOnce(invalidCode(4, 90));
+    await login.verifyCode('000000');
+    api.verifyCode.mockResolvedValue(loggedIn);
+    await login.verifyCode('123456');
+    expect(login.blockFor(PHONE)).toEqual({ reason: 'number', seconds: 90 });
+  });
+
+  it('reopened after signing out, inside the wait: the countdown continues', async () => {
+    const first = await onCodeStep();
+    first.api.verifyCode.mockResolvedValue(loggedIn);
+    await first.login.verifyCode('123456');
+    advance(25);
+    const { login, api } = await reopen(first);
+    expect(login.blockFor(PHONE)).toEqual({ reason: 'number', seconds: 35 });
+    await login.requestCode(PHONE);
+    expect(api.requestCode).not.toHaveBeenCalled();
+  });
+
+  it('reopened after the wait: nothing to wait for, the block is dropped', async () => {
+    const first = await onCodeStep();
+    first.api.verifyCode.mockResolvedValue(loggedIn);
+    await first.login.verifyCode('123456');
+    advance(61);
+    const { login, blocks } = await reopen(first);
+    expect(login.blockFor(PHONE)).toBeNull();
+    expect(blocks.value).toEqual({ all: null, numbers: [] });
+  });
+
+  it('a block never gets shorter: a later, shorter wait keeps the longer one', async () => {
+    const { login, api } = await onCodeStep();
+    advance(60);
+    api.requestCode.mockRejectedValueOnce(rateLimited('phone_hour', 3599));
+    await login.resendCode(); // the hour's limit: a long block
+    api.verifyCode.mockRejectedValueOnce(invalidCode(4, 30)); // then a verify error says 30 s
+    await login.verifyCode('000000');
+    expect(login.blockFor(PHONE)).toEqual({ reason: 'number', seconds: 3599 });
+    expect(login.secondsUntilResend).toBe(3599);
   });
 });
 

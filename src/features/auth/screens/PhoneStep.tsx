@@ -61,7 +61,7 @@ export const PhoneStep = observer(function PhoneStep({ login }: { login: LoginFl
         {t('auth.phone.title')}
       </Text>
       <Text muted>{t('auth.phone.subtitle')}</Text>
-      {login.notice && login.notice !== 'code_already_sent' ? (
+      {login.notice ? (
         <Text style={{ color: theme.colors.danger }}>{t(`auth.notice.${login.notice}`)}</Text>
       ) : null}
       <TextField

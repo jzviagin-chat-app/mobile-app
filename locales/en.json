@@ -38,8 +38,7 @@
     "notice": {
       "code_expired": "That code has expired. Enter your number to get a new one.",
       "registration_expired": "That took too long. Verify your number again.",
-      "already_registered": "This number already has an account. Sign in with a new code.",
-      "code_already_sent": "A code was already sent to this number. Enter it, or wait for a new one."
+      "already_registered": "This number already has an account. Sign in with a new code."
     },
     "errors": {
       "invalid_phone": "That doesn't look like a mobile number.",
