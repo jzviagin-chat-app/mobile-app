@@ -466,6 +466,37 @@ describe('LoginScreen: code step', () => {
       expect(screen.getByTestId('code-change-number')).toBeEnabled();
     });
 
+    it('a device lock still takes a code that arrives late: it signs in', async () => {
+      const deps = await renderLogin({}, withClock());
+      await toCodeStep(deps);
+      await tick(60);
+      deps.fakeApi.requestCode.mockRejectedValueOnce(rateLimited('ip_hour', 100));
+      await fireEvent.press(screen.getByTestId('code-resend'));
+      await screen.findByTestId('code-send-error');
+      deps.fakeApi.verifyCode.mockResolvedValue(loggedIn);
+      await fireEvent.changeText(screen.getByTestId('otp-input'), '123456');
+      expect(deps.fakeApi.verifyCode).toHaveBeenCalledWith('+972502345678', '123456', deps.device);
+      expect(await screen.findByTestId('phone-input')).toBeOnTheScreen(); // signed in: the flow reset
+    });
+
+    it('a wrong code marks the field red; a lock message shows next to it', async () => {
+      const deps = await renderLogin({}, withClock());
+      await toCodeStep(deps);
+      deps.fakeApi.verifyCode.mockRejectedValueOnce(invalidCode(3));
+      await fireEvent.changeText(screen.getByTestId('otp-input'), '000000');
+      expect(await screen.findByText('Wrong code. Tries left: 3.')).toBeOnTheScreen();
+      expect(screen.getByTestId('otp-box-0')).toHaveStyle({
+        borderColor: getTheme('light').colors.danger,
+      });
+      await tick(60);
+      deps.fakeApi.requestCode.mockRejectedValueOnce(rateLimited('ip_hour', 100));
+      await fireEvent.press(screen.getByTestId('code-resend'));
+      expect(
+        await screen.findByText('Too many code requests from this network. Try again in 1:40.'),
+      ).toBeOnTheScreen();
+      expect(screen.getByText('Wrong code. Tries left: 3.')).toBeOnTheScreen(); // both, not one hiding the other
+    });
+
     it.each([
       ['en', 'New code in 1:40', 'Change number in 1:40', 'Change number'],
       ['he', 'קוד חדש בעוד 1:40', 'שינוי מספר בעוד 1:40', 'שינוי מספר'],
@@ -484,6 +515,13 @@ describe('LoginScreen: code step', () => {
         expect(screen.getByText(change)).toBeOnTheScreen();
         expect(screen.getByTestId('code-resend')).toBeDisabled();
         expect(screen.getByTestId('code-change-number')).toBeDisabled();
+        // The lock is about sending: the code field stays usable and isn't marked as wrong.
+        expect(screen.getByTestId('otp-input')).toBeEnabled();
+        expect(screen.getByTestId('otp-box-0')).not.toHaveStyle({
+          borderColor: getTheme('light').colors.danger,
+        });
+        expect(screen.queryByTestId('code-error')).toBeNull();
+        expect(screen.getByTestId('code-send-error')).toBeOnTheScreen();
         await tick(1);
         expect(screen.getByText(change.replace('1:40', '1:39'))).toBeOnTheScreen();
         await tick(99);

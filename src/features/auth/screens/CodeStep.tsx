@@ -36,8 +36,12 @@ export const CodeStep = observer(function CodeStep({ login }: { login: LoginFlow
   const resendError = useLoginError(resendResult);
   const verifyCode = verifyResult && !verifyResult.ok ? verifyResult.error.code : null;
   const staticVerifyError = verifyCode && !LIVE_VERIFY_ERRORS.has(verifyCode) ? verifyError : null;
-  const message =
-    staticVerifyError ?? codeMessage(t, login, verifyCode === 'invalid_code') ?? resendError;
+  // Two kinds of message: about this code (it marks the field red) and about sending a new one (a device
+  // lock, a failed resend: the code already sent may still arrive late and work, so the field stays
+  // neutral and usable).
+  const codeError = staticVerifyError ?? codeMessage(t, login, verifyCode === 'invalid_code');
+  const block = login.blockFor(login.phone);
+  const sendMessage = block && block.reason !== 'number' ? blockText(t, block) : resendError;
   const wait = login.secondsUntilResend; // ticks every second while shown
   const locked = login.secondsUntilUnlock; // the device lock: both buttons count it down
 
@@ -85,24 +89,24 @@ export const CodeStep = observer(function CodeStep({ login }: { login: LoginFlow
         onComplete={(entered) => startTransition(() => verify(entered))}
         busy={verifying}
         disabled={!login.canEnterCode}
-        error={!!message}
+        error={!!codeError}
       />
-      {message ? (
+      {codeError ? (
         <Text accessibilityLiveRegion="polite" testID="code-error">
-          {message}
+          {codeError}
+        </Text>
+      ) : null}
+      {sendMessage ? (
+        <Text accessibilityLiveRegion="polite" testID="code-send-error">
+          {sendMessage}
         </Text>
       ) : null}
     </Screen>
   );
 });
 
-/**
- * The live message for this code: a block on every number, too many tries, or a wrong code (and any wait).
- * This number's own wait is already counted down on the resend button.
- */
+/** The live message about this code: too many tries, or a wrong code (and any wait before the next try). */
 function codeMessage(t: TFunction, login: LoginFlowStore, wrongCode: boolean): string | null {
-  const block = login.blockFor(login.phone);
-  if (block && block.reason !== 'number') return blockText(t, block);
   if (login.codeState === 'too_many_attempts') return t('auth.code.locked');
   const retry = login.secondsUntilCodeRetry;
   if (retry > 0) return t('auth.code.wrongWait', { time: formatDuration(retry) });

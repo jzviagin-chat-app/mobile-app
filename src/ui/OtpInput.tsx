@@ -76,6 +76,7 @@ export function OtpInput({
         return (
           <View
             key={i}
+            testID={`otp-box-${i}`}
             style={[
               styles.box,
               {
