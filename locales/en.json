@@ -24,6 +24,7 @@
       "resend": "Send a new code",
       "resendIn": "New code in {{time}}",
       "changeNumber": "Change number",
+      "changeNumberIn": "Change number in {{time}}",
       "wrong": "Wrong code. Check the SMS and try again.",
       "wrongTriesLeft": "Wrong code. Tries left: {{count}}.",
       "wrongWait": "Wrong code. You can try again in {{time}}.",

@@ -8,7 +8,6 @@ const progressSchema = z.object({
   step: z.enum(['code', 'name']),
   phone: z.string(),
   /** Unix ms on the phone's clock. */
-  resendAvailableAt: z.number().nullable(),
   codeExpiresAt: z.number().nullable(),
   /** `too_many_attempts`: the code is used up; the field stays disabled until a new code is sent. */
   codeState: z.enum(['active', 'too_many_attempts']),

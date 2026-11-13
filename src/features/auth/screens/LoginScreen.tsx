@@ -11,9 +11,9 @@ type Props = { login: LoginFlowStore };
 
 /**
  * The whole login on one route (/auth). The store's `step` is the only truth about where the user is:
- * this screen just shows it, so the screen and the state can never disagree. Android's back button and
- * "Change number" both call login.back(). When the code or the registration token expires, the store
- * switches to the phone step by itself.
+ * this screen just shows it, so the screen and the state can never disagree. Only "Change number" goes back
+ * (login.back()); Android's back button does nothing on the code and name steps (owner, 2026-11-13). When
+ * the code or the registration token expires, the store switches to the phone step by itself.
  */
 export const LoginScreen = observer(function LoginScreen({ login }: Props) {
   const step = login.step;
@@ -21,10 +21,7 @@ export const LoginScreen = observer(function LoginScreen({ login }: Props) {
   useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
       if (login.step === 'phone') return false; // default: leave the app
-      // Handled either way: on the code step back waits for the countdown, and the name step has no way
-      // back (login.back() ignores both).
-      void login.back();
-      return true;
+      return true; // code and name steps: handled by doing nothing
     });
     return () => subscription.remove();
   }, [login]);

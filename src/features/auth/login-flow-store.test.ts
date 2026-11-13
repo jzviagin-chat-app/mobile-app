@@ -1,4 +1,4 @@
-import { ApiError, NetworkError } from '@/lib/api';
+import { ApiError, NetworkError, type CodeSent } from '@/lib/api';
 import { toApiError } from '@/lib/api/errors';
 import { createClock, type Clock } from '@/lib/clock';
 import { log } from '@/lib/log';
@@ -86,7 +86,7 @@ async function reopen(previous: ReturnType<typeof setup>, clock: Clock = testClo
   return next;
 }
 
-async function onCodeStep(sent = codeSent) {
+async function onCodeStep(sent: CodeSent = codeSent) {
   const s = setup();
   s.api.requestCode.mockResolvedValue(sent);
   await s.login.requestCode(PHONE);
@@ -236,40 +236,73 @@ describe('LoginFlowStore: phone step', () => {
 });
 
 describe('LoginFlowStore: back, resend and the countdown', () => {
-  it('back is refused while the countdown runs (Change number waits like resend)', async () => {
-    const { login, progress } = await onCodeStep();
-    expect(login.canGoBack).toBe(false);
-    await login.back();
-    expect(login.step).toBe('code');
-    expect(progress.value).not.toBeNull();
-  });
-
-  it('back waits for the full countdown, even an hour (after the hour’s last code)', async () => {
-    const { login } = await onCodeStep({ resend_after_seconds: 3599, expires_in_seconds: 300 });
-    expect(login.secondsUntilResend).toBe(3599);
-    advance(60);
-    expect(login.canGoBack).toBe(false);
-  });
-
-  it('back after the countdown clears everything, in memory and in storage', async () => {
-    const { login, progress } = await onCodeStep();
-    advance(60);
+  it('Change number works at once, while this number still waits (owner, 2026-11-13)', async () => {
+    const { login, progress, blocks } = await onCodeStep();
+    expect(login.secondsUntilResend).toBe(60);
     expect(login.canGoBack).toBe(true);
     await login.back();
     expect(login).toMatchObject({
       step: 'phone',
       phone: null,
-      resendAvailableAt: null,
       codeExpiresAt: null,
       country: 'IL',
       notice: null,
     });
     expect(progress.value).toBeNull();
+    // The number keeps its wait; other numbers are free.
+    expect(blocks.value?.numbers).toEqual([{ phone: PHONE, until: Date.now() + 60_000 }]);
+    expect(login.blockFor(PHONE)).toEqual({ reason: 'number', seconds: 60 });
+    expect(login.blockFor(OTHER)).toBeNull();
+  });
+
+  it('Change number works at once even after an hour’s wait for this number', async () => {
+    const { login, api } = await onCodeStep({
+      resend_after_seconds: 3599,
+      expires_in_seconds: 300,
+    });
+    expect(login.secondsUntilResend).toBe(3599);
+    expect(login.canGoBack).toBe(true);
+    await login.back();
+    expect(login.blockFor(PHONE)).toEqual({ reason: 'number', seconds: 3599 });
+    api.requestCode.mockResolvedValueOnce(codeSent);
+    await expect(login.requestCode('053-123-4567')).resolves.toEqual({ ok: true });
+  });
+
+  it('a device lock disables Change number with the same countdown as resend', async () => {
+    const { login, api } = await onCodeStep();
+    advance(60);
+    api.requestCode.mockRejectedValueOnce(rateLimited('ip_hour', 3000));
+    await login.resendCode();
+    expect(login.step).toBe('code');
+    expect(login.secondsUntilUnlock).toBe(3000);
+    expect(login.secondsUntilResend).toBe(3000);
+    expect(login.canGoBack).toBe(false);
+    await login.back();
+    expect(login.step).toBe('code');
+    advance(3000);
+    expect(login.canGoBack).toBe(true);
+  });
+
+  it('a 202 naming ip_hour (planned field) locks the device; without it, only the number waits', async () => {
+    const locked = await onCodeStep({
+      resend_after_seconds: 3000,
+      expires_in_seconds: 300,
+      limit: 'ip_hour',
+    });
+    expect(locked.login.secondsUntilUnlock).toBe(3000);
+    expect(locked.login.canGoBack).toBe(false);
+    expect(locked.login.blockFor(OTHER)).toEqual({ reason: 'network', seconds: 3000 });
+
+    const numberOnly = await onCodeStep({ resend_after_seconds: 3000, expires_in_seconds: 300 });
+    expect(numberOnly.login.secondsUntilUnlock).toBe(0);
+    expect(numberOnly.login.canGoBack).toBe(true);
+    expect(numberOnly.login.blockFor(OTHER)).toBeNull();
+    expect(numberOnly.login.blockFor(PHONE)).toEqual({ reason: 'number', seconds: 3000 });
   });
 
   it('back, then the same number again: a new request and a fresh countdown', async () => {
     const { login, api } = await onCodeStep();
-    advance(90);
+    advance(60);
     await login.back();
     await expect(login.requestCode(PHONE)).resolves.toEqual({ ok: true });
     expect(api.requestCode).toHaveBeenCalledTimes(2);
@@ -308,7 +341,7 @@ describe('LoginFlowStore: back, resend and the countdown', () => {
     expect(login.step).toBe('code');
     expect(login.secondsUntilResend).toBe(3000);
     expect(login.blockFor(login.phone)).toEqual({ reason: 'number', seconds: 3000 });
-    expect(login.canGoBack).toBe(false);
+    expect(login.canGoBack).toBe(true); // only this number waits
   });
 });
 
@@ -395,7 +428,7 @@ describe('LoginFlowStore: code step', () => {
     expect(login.codeState).toBe('too_many_attempts');
     expect(login.canEnterCode).toBe(false);
     expect(login.secondsUntilResend).toBe(45);
-    expect(login.canGoBack).toBe(false);
+    expect(login.canGoBack).toBe(true); // only this number waits
     expect(progress.value).toMatchObject({ codeState: 'too_many_attempts' });
     advance(45);
     expect(login.canGoBack).toBe(true);
@@ -587,6 +620,25 @@ describe('LoginFlowStore: the wait for a new code outlives the login', () => {
     expect(blocks.value).toEqual({ all: null, numbers: [] });
   });
 
+  it('each block is removed from storage when its time is up (while the app runs)', async () => {
+    const { login, api, blocks } = setup(null, null, createClock());
+    api.requestCode.mockRejectedValueOnce(rateLimited('phone_hour', 90));
+    await login.requestCode(PHONE); // this number waits 90 s
+    api.requestCode.mockRejectedValueOnce(rateLimited('ip_hour', 30));
+    await login.requestCode('053-123-4567'); // then the device is locked for 30 s
+    expect(blocks.value).toEqual({
+      all: { reason: 'network', until: Date.now() + 30_000 },
+      numbers: [{ phone: PHONE, until: Date.now() + 90_000 }],
+    });
+    await jest.advanceTimersByTimeAsync(31_000);
+    expect(blocks.value).toEqual({
+      all: null,
+      numbers: [{ phone: PHONE, until: expect.any(Number) }],
+    });
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(blocks.value).toEqual({ all: null, numbers: [] });
+  });
+
   it('a block never gets shorter: a later, shorter wait keeps the longer one', async () => {
     const { login, api } = await onCodeStep();
     advance(60);
@@ -638,7 +690,7 @@ describe('LoginFlowStore: waits survive closing the app', () => {
       const during = await reopen(first);
       expect(during.login.step).toBe('code');
       expect(during.login.secondsUntilResend).toBe(80);
-      expect(during.login.canGoBack).toBe(false);
+      expect(during.login.canGoBack).toBe(true); // only this number waits
       // Closed again past the wait (the code expired too by then: 60 + 40 + 200 s > 300 s).
       advance(200);
       const after = await reopen(during);
@@ -684,7 +736,7 @@ describe('LoginFlowStore: waits survive closing the app', () => {
       return s;
     }
 
-    it('reopened during the cooldown: locked, resend and Change number count down', async () => {
+    it('reopened during the cooldown: locked, resend counts down, Change number free', async () => {
       const first = await locked();
       advance(25);
       const { login } = await reopen(first);
@@ -692,7 +744,7 @@ describe('LoginFlowStore: waits survive closing the app', () => {
       expect(login.codeState).toBe('too_many_attempts');
       expect(login.canEnterCode).toBe(false);
       expect(login.secondsUntilResend).toBe(35);
-      expect(login.canGoBack).toBe(false);
+      expect(login.canGoBack).toBe(true); // only this number waits
     });
 
     it('reopened after the cooldown: resend and Change number usable at once', async () => {

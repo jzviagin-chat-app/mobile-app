@@ -24,6 +24,7 @@
       "resend": "שליחת קוד חדש",
       "resendIn": "קוד חדש בעוד {{time}}",
       "changeNumber": "שינוי מספר",
+      "changeNumberIn": "שינוי מספר בעוד {{time}}",
       "wrong": "הקוד שגוי. כדאי לבדוק את ה-SMS ולנסות שוב.",
       "wrongTriesLeft": "הקוד שגוי. ניסיונות שנותרו: {{count}}.",
       "wrongWait": "הקוד שגוי. אפשר לנסות שוב בעוד {{time}}.",

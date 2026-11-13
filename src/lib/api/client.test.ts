@@ -29,6 +29,26 @@ const api = (fetch: typeof globalThis.fetch, timeoutMs?: number) =>
   createAuthApi({ baseUrl: 'https://auth.test', fetch, timeoutMs });
 
 describe('createAuthApi', () => {
+  it.each([
+    ['ip_hour', { limit: 'ip_hour' }],
+    ['phone_day', { limit: 'phone_day' }],
+    ['an unknown name', {}],
+    ['a wrong type', {}],
+  ])(
+    'requestCode reads the planned limit of a long wait in the 202 (%s)',
+    async (_case, expected) => {
+      const limit = _case === 'an unknown name' ? 'moon' : _case === 'a wrong type' ? 7 : _case;
+      const { fetch } = fakeFetch(() =>
+        json(202, { resend_after_seconds: 3000, expires_in_seconds: 300, limit }),
+      );
+      await expect(api(fetch).requestCode('+972502345678')).resolves.toEqual({
+        resend_after_seconds: 3000,
+        expires_in_seconds: 300,
+        ...expected,
+      });
+    },
+  );
+
   it('requestCode posts the phone and returns the timers', async () => {
     const { fetch, requests } = fakeFetch(() =>
       json(202, { resend_after_seconds: 60, expires_in_seconds: 300 }),

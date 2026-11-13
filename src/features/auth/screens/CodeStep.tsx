@@ -39,6 +39,7 @@ export const CodeStep = observer(function CodeStep({ login }: { login: LoginFlow
   const message =
     staticVerifyError ?? codeMessage(t, login, verifyCode === 'invalid_code') ?? resendError;
   const wait = login.secondsUntilResend; // ticks every second while shown
+  const locked = login.secondsUntilUnlock; // the device lock: both buttons count it down
 
   return (
     <Screen
@@ -56,11 +57,15 @@ export const CodeStep = observer(function CodeStep({ login }: { login: LoginFlow
             loading={resending}
             onPress={() => startTransition(() => resend())}
           />
-          {/* Waits for the same countdown as resend, however long (owner decisions 2026-11-10/12). */}
+          {/* Any time, unless the device is locked: then the same countdown as resend (owner, 2026-11-13). */}
           <Button
             testID="code-change-number"
             variant="secondary"
-            title={t('auth.code.changeNumber')}
+            title={
+              locked > 0
+                ? t('auth.code.changeNumberIn', { time: formatDuration(locked) })
+                : t('auth.code.changeNumber')
+            }
             disabled={!login.canGoBack || verifying}
             onPress={() => void login.back()}
           />

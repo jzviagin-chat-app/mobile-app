@@ -1,13 +1,19 @@
 import createClient from 'openapi-fetch';
 
-import { ApiError, NetworkError, toApiError } from './errors';
+import { ApiError, NetworkError, toApiError, toRateLimit, type RateLimit } from './errors';
 import type { components, paths } from './schema';
 
 type Schemas = components['schemas'];
 export type DeviceIn = Schemas['DeviceIn'];
 export type LoggedIn = Schemas['LoggedInOut'];
 export type RegistrationRequired = Schemas['RegistrationRequiredOut'];
-export type CodeSent = Schemas['OtpRequestOut'];
+/**
+ * The 202 of otp/request. `limit` (planned in auth-service, not sent yet) names the limit that set
+ * `resend_after_seconds` when it's longer than the cooldown (this code used a window's last slot), as in a
+ * 429: `ip_hour` / `ip_day` lock every number on this network. Without it the wait is taken as this
+ * number's.
+ */
+export type CodeSent = Schemas['OtpRequestOut'] & { limit?: RateLimit };
 
 export type AuthApiOptions = {
   /** e.g. https://jzviagin-chat-app.129-159-150-34.sslip.io (no trailing slash). */
@@ -52,8 +58,15 @@ export function createAuthApi({ baseUrl, fetch, timeoutMs = 15_000 }: AuthApiOpt
 
   return {
     /** POST /auth/otp/request: sends an SMS code. */
-    requestCode(phone: string): Promise<CodeSent> {
-      return send((signal) => client.POST('/auth/otp/request', { body: { phone }, signal }));
+    async requestCode(phone: string): Promise<CodeSent> {
+      const sent = await send((signal) =>
+        client.POST('/auth/otp/request', { body: { phone }, signal }),
+      );
+      const { resend_after_seconds, expires_in_seconds } = sent;
+      const limit = toRateLimit((sent as Record<string, unknown>).limit);
+      return limit
+        ? { resend_after_seconds, expires_in_seconds, limit }
+        : { resend_after_seconds, expires_in_seconds };
     },
 
     /** POST /auth/otp/verify: logged in (known number) or registration required (new number). */

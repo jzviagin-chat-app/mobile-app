@@ -44,18 +44,21 @@ const NAME_MAX = 50;
  *
  * Rules (owner, 2026-11-09…12):
  * - Back to the phone step clears everything, in memory and in storage; the phone step is never saved.
- * - On the code step, back ("Change number", Android back) waits for the same countdown as "Send a new
- *   code", however long. The name step has no way back: the only way on is to continue.
+ * - On the code step, "Change number" goes back at any time, unless the device is locked (a network limit
+ *   or the daily SMS cap): then it counts down with "Send a new code". Android's back button does nothing
+ *   on the code and name steps; the name step has no way back (owner, 2026-11-13).
  * - Too many wrong tries keep the code step (input disabled) until a new code is sent.
  * - When the code or the registration token expires, the login starts over: while the app is open (a
  *   reaction on the clock), at startup, or when the server says so. Deadlines are absolute times on the
  *   phone's clock, so time the app spent closed counts too.
  * - The code and name steps are saved after every change; the server's send blocks in their own item. Every
  *   wait survives a restart.
- * - Each number's wait for a new code is also a send block, so it outlives the code step: after sign-in,
- *   sign-out, back or expiry, that number shows the countdown instead of asking the server. A refused
- *   request (`429 resend_cooldown` included) never moves the flow on: the app can't know whether a code is
- *   waiting, so it shows the wait (owner, 2026-11-13).
+ * - Send blocks are the only record of waits (owner, 2026-11-13): one device lock (`blocks.all`: every
+ *   number, from `ip_*` or the daily SMS cap) and one wait per number (`blocks.numbers`: its cooldown or
+ *   hour / day limit). They outlive the code step: after sign-in, sign-out, back or expiry, a waiting
+ *   number shows its countdown instead of asking the server; other numbers are free unless the device is
+ *   locked. Each entry is removed when its time is up. A refused request (`429 resend_cooldown` included)
+ *   never moves the flow on: the app can't know whether a code is waiting, so it shows the wait.
  *
  * Every action returns a LoginResult and never throws.
  */
@@ -64,8 +67,6 @@ export class LoginFlowStore {
   step: LoginStep = 'phone';
   /** E.164, once a code was requested for it. */
   phone: string | null = null;
-  /** Unix ms (phone clock): when "Send a new code" / "Change number" become available. */
-  resendAvailableAt: number | null = null;
   codeExpiresAt: number | null = null;
   codeState: CodeState = 'active';
   /** Tries left for this code, after a wrong one (null: none wrong yet). */
@@ -79,16 +80,21 @@ export class LoginFlowStore {
 
   private readonly deps: LoginFlowDeps;
   private readonly stopExpiry: () => void;
+  private readonly stopPrune: () => void;
 
   constructor(deps: LoginFlowDeps) {
     this.deps = deps;
     // Read-only helpers stay plain functions: as actions they would be untracked, and the countdowns
     // that call them would never update.
-    makeAutoObservable<this, 'deps' | 'stopExpiry' | 'blockUntil' | 'secondsUntil' | 'expiredAt'>(
+    makeAutoObservable<
+      this,
+      'deps' | 'stopExpiry' | 'stopPrune' | 'blockUntil' | 'secondsUntil' | 'expiredAt'
+    >(
       this,
       {
         deps: false,
         stopExpiry: false,
+        stopPrune: false,
         blockFor: false,
         blockUntil: false,
         secondsUntil: false,
@@ -104,17 +110,29 @@ export class LoginFlowStore {
         if (expired) void this.expire(expired);
       },
     );
+    // Each send block is removed (also from storage) when its time is up. Reads the clock only while a
+    // block exists, so the clock ticks only then.
+    this.stopPrune = reaction(
+      () => this.blockEnded,
+      (ended) => {
+        if (ended) void this.pruneBlocks();
+      },
+    );
   }
 
   dispose(): void {
     this.stopExpiry();
+    this.stopPrune();
   }
 
-  /** Seconds until a new code may be requested (ticks every second while a screen shows it). */
+  /** Seconds until a new code may be sent to this number: its own wait or the device lock (live). */
   get secondsUntilResend(): number {
-    const block = this.blockUntil(this.phone);
-    const until = Math.max(this.resendAvailableAt ?? 0, block?.until ?? 0);
-    return this.secondsUntil(until);
+    return this.secondsUntil(this.blockUntil(this.phone)?.until ?? 0);
+  }
+
+  /** Seconds until the device lock ends (every number blocked: network limit, daily SMS cap). */
+  get secondsUntilUnlock(): number {
+    return this.secondsUntil(this.blocks.all?.until ?? 0);
   }
 
   /** Seconds until the next try of this code, if the server asked to wait after a wrong one. */
@@ -127,9 +145,9 @@ export class LoginFlowStore {
     return this.codeState === 'active' && this.secondsUntilCodeRetry === 0;
   }
 
-  /** Back from the code step once the resend countdown is over; never from the name step. */
+  /** "Change number": any time on the code step, unless the device is locked; never from the name step. */
   get canGoBack(): boolean {
-    return this.step === 'code' && this.secondsUntilResend === 0;
+    return this.step === 'code' && this.secondsUntilUnlock === 0;
   }
 
   /** What blocks sending a code to this E.164 number now (or to every number), or null. */
@@ -269,7 +287,6 @@ export class LoginFlowStore {
     this.country = saved.country as CountryCode;
     this.step = saved.step;
     this.phone = saved.phone;
-    this.resendAvailableAt = saved.resendAvailableAt;
     this.codeExpiresAt = saved.codeExpiresAt;
     this.codeState = saved.codeState;
     this.attemptsLeft = saved.attemptsLeft;
@@ -281,6 +298,17 @@ export class LoginFlowStore {
   });
 
   // ---- internals ----
+
+  /** A send block's time is up (reads the clock only while there is one). */
+  private get blockEnded(): boolean {
+    const ends = [this.blocks.all?.until, ...this.blocks.numbers.map((block) => block.until)];
+    const first = Math.min(...ends.filter((until): until is number => until !== undefined));
+    return Number.isFinite(first) && this.deps.clock.now >= first;
+  }
+
+  private pruneBlocks = flow(function* (this: LoginFlowStore) {
+    yield this.saveBlocks(activeBlocks(this.blocks, Date.now()));
+  });
 
   /** Which deadline has passed on the code / name step (reads the clock only there). */
   private get expired(): 'code' | 'name' | null {
@@ -337,7 +365,13 @@ export class LoginFlowStore {
         yield this.deps.api.requestCode(phone);
       this.toCode(phone, now + sent.expires_in_seconds * 1000);
       this.clearCodeAttempts();
-      yield this.waitForResend(phone, now + sent.resend_after_seconds * 1000);
+      yield this.save();
+      const until = now + sent.resend_after_seconds * 1000;
+      // A long wait names its limit (planned in auth-service): the network's locks every number. Without
+      // a name it's this number's (owner, 2026-11-13).
+      if (sent.limit === 'ip_hour' || sent.limit === 'ip_day')
+        yield this.blockAll('network', until);
+      else yield this.waitForResend(phone, until);
       return ok;
     } catch (error) {
       if (!(error instanceof ApiError)) return toLoginError(error);
@@ -364,22 +398,17 @@ export class LoginFlowStore {
 
   private toCode(phone: string, codeExpiresAt: number): void {
     this.phone = phone;
-    this.resendAvailableAt = null; // set by waitForResend
     this.codeExpiresAt = codeExpiresAt;
     this.step = 'code';
   }
 
   /**
-   * When this number may get a new code: a send block (outlives the code step, see the class comment) and, on
-   * the code step, its resend countdown. Only ever later: after the hour's last code the 202's wait is longer
-   * than the cooldown a verify error reports.
+   * When this number may get a new code: its send block (outlives the code step, see the class comment).
+   * Only ever later: after the hour's last code the 202's wait is longer than the cooldown a verify error
+   * reports.
    */
   private waitForResend = flow(function* (this: LoginFlowStore, phone: string, until: number) {
     yield this.blockNumber(phone, until);
-    if (this.step === 'code' && this.phone === phone) {
-      this.resendAvailableAt = Math.max(this.resendAvailableAt ?? 0, until);
-      yield this.save();
-    }
   });
 
   /** A fresh code: typing allowed again. */
@@ -390,7 +419,6 @@ export class LoginFlowStore {
   }
 
   private clearCode(): void {
-    this.resendAvailableAt = null;
     this.codeExpiresAt = null;
     this.clearCodeAttempts();
   }
@@ -450,7 +478,6 @@ export class LoginFlowStore {
       country: this.country,
       step: this.step,
       phone: this.phone,
-      resendAvailableAt: this.resendAvailableAt,
       codeExpiresAt: this.codeExpiresAt,
       codeState: this.codeState,
       attemptsLeft: this.attemptsLeft,

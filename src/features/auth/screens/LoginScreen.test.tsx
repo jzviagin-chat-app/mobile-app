@@ -240,40 +240,43 @@ describe('LoginScreen: code step', () => {
     const withClock = () => testDeps({ clock: createClock() });
     const tick = (seconds: number) => act(async () => jest.advanceTimersByTime(seconds * 1000));
 
-    it('"Change number" waits for the same countdown as resend, then opens an empty phone step', async () => {
+    it('"Change number" works at once; that number keeps its timer, another number is free', async () => {
       const deps = await renderLogin({}, withClock());
       await toCodeStep(deps);
-      expect(screen.getByTestId('code-change-number')).toBeDisabled();
       expect(screen.getByTestId('code-resend')).toBeDisabled();
       expect(screen.getByText('New code in 1:00')).toBeOnTheScreen();
-
-      await tick(30);
-      expect(screen.getByText('New code in 0:30')).toBeOnTheScreen();
-      expect(screen.getByTestId('code-change-number')).toBeDisabled();
-
-      await tick(30);
       expect(screen.getByTestId('code-change-number')).toBeEnabled();
-      expect(screen.getByTestId('code-resend')).toBeEnabled();
+      expect(screen.getByText('Change number')).toBeOnTheScreen();
 
+      await tick(15);
       await fireEvent.press(screen.getByTestId('code-change-number'));
-      expect(await screen.findByTestId('phone-input')).toHaveDisplayValue('');
+      const input = await screen.findByTestId('phone-input');
+      expect(input).toHaveDisplayValue('');
       expect(deps.loginProgress.value).toBeNull();
+
+      await fireEvent.changeText(input, '0502345678'); // the same number: its timer
+      expect(
+        screen.getByText('You can ask for a new code for this number in 0:45.'),
+      ).toBeOnTheScreen();
+      expect(screen.getByTestId('phone-continue')).toBeDisabled();
+      await fireEvent.changeText(input, '0531234567'); // another number: free
+      expect(screen.getByTestId('phone-continue')).toBeEnabled();
     });
 
-    it("Android's back button does nothing during the countdown, then goes back", async () => {
+    it("Android's back button does nothing on the code step; on the phone step it leaves", async () => {
       const press = captureBackButton();
       const deps = await renderLogin({}, withClock());
       await toCodeStep(deps);
 
-      expect(await press()).toBe(true); // handled (the app stays), but ignored
+      expect(await press()).toBe(true); // handled (the app stays), and ignored
+      expect(screen.getByTestId('otp-input')).toBeOnTheScreen();
+      await tick(60);
+      expect(await press()).toBe(true); // also after the countdown: only the button goes back
       expect(screen.getByTestId('otp-input')).toBeOnTheScreen();
 
-      await tick(60);
-      expect(await press()).toBe(true);
-      expect(await screen.findByTestId('phone-input')).toBeOnTheScreen();
-
-      // On the first step back is not handled: Android leaves the app as usual.
-      expect(await press()).toBe(false);
+      await fireEvent.press(screen.getByTestId('code-change-number'));
+      await screen.findByTestId('phone-input');
+      expect(await press()).toBe(false); // the first step: Android leaves the app as usual
     });
 
     it('a wait after a wrong code (mocked server field) disables the code until it ends', async () => {
@@ -291,7 +294,7 @@ describe('LoginScreen: code step', () => {
       expect(screen.getByTestId('otp-input')).toBeEnabled();
     });
 
-    it('no tries left: the code disabled, resend and Change number count down, a new code opens it', async () => {
+    it('no tries left: the code disabled, resend counts down, a new code opens it', async () => {
       const deps = await renderLogin({}, withClock());
       await toCodeStep(deps);
       await tick(20);
@@ -303,7 +306,7 @@ describe('LoginScreen: code step', () => {
       expect(screen.getByTestId('otp-input')).toBeDisabled();
       expect(screen.getByText('New code in 0:40')).toBeOnTheScreen();
       expect(screen.getByTestId('code-resend')).toBeDisabled();
-      expect(screen.getByTestId('code-change-number')).toBeDisabled();
+      expect(screen.getByTestId('code-change-number')).toBeEnabled(); // only this number waits
 
       await tick(40);
       expect(screen.getByTestId('code-resend')).toBeEnabled();
@@ -452,15 +455,41 @@ describe('LoginScreen: code step', () => {
       expect(screen.getByTestId('otp-input')).toBeDisabled();
     });
 
-    it('back, then the same number again: a new code and a fresh countdown', async () => {
+    it('back after the wait, then the same number again: a new code and a fresh countdown', async () => {
       const deps = await renderLogin({}, withClock());
       await toCodeStep(deps);
-      await tick(90);
+      await tick(60);
       await fireEvent.press(screen.getByTestId('code-change-number'));
       await toCodeStep(deps);
       expect(deps.fakeApi.requestCode).toHaveBeenCalledTimes(2);
       expect(screen.getByText('New code in 1:00')).toBeOnTheScreen();
-      expect(screen.getByTestId('code-change-number')).toBeDisabled();
+      expect(screen.getByTestId('code-change-number')).toBeEnabled();
     });
+
+    it.each([
+      ['en', 'New code in 1:40', 'Change number in 1:40', 'Change number'],
+      ['he', 'קוד חדש בעוד 1:40', 'שינוי מספר בעוד 1:40', 'שינוי מספר'],
+    ])(
+      'a device lock in %s: both buttons disabled with the same countdown',
+      async (language, resend, change, changeFree) => {
+        const deps = await renderLogin(
+          { language },
+          testDeps({ clock: createClock(), locales: [{ languageCode: language }] }),
+        );
+        await toCodeStep(deps);
+        await tick(60);
+        deps.fakeApi.requestCode.mockRejectedValueOnce(rateLimited('ip_hour', 100)); // shorter than the code's life
+        await fireEvent.press(screen.getByTestId('code-resend'));
+        expect(await screen.findByText(resend)).toBeOnTheScreen();
+        expect(screen.getByText(change)).toBeOnTheScreen();
+        expect(screen.getByTestId('code-resend')).toBeDisabled();
+        expect(screen.getByTestId('code-change-number')).toBeDisabled();
+        await tick(1);
+        expect(screen.getByText(change.replace('1:40', '1:39'))).toBeOnTheScreen();
+        await tick(99);
+        expect(screen.getByTestId('code-change-number')).toBeEnabled();
+        expect(screen.getByText(changeFree)).toBeOnTheScreen();
+      },
+    );
   });
 });

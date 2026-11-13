@@ -82,6 +82,13 @@ function isErrorCode(value: unknown): value is ErrorCode {
 }
 
 /** A whole number of seconds ≥ min, or undefined (a wrong value is dropped, never trusted). */
+/** One of the known limit names, else undefined (a wrong or new value is dropped). */
+export function toRateLimit(value: unknown): RateLimit | undefined {
+  return typeof value === 'string' && (rateLimits as readonly string[]).includes(value)
+    ? (value as RateLimit)
+    : undefined;
+}
+
 function seconds(value: unknown, min: number): number | undefined {
   return typeof value === 'number' && Number.isInteger(value) && value >= min ? value : undefined;
 }
@@ -92,10 +99,8 @@ export function toApiError(response: Response, body: unknown): ApiError {
     typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {};
   const code = isErrorCode(fields.error) ? fields.error : 'unknown';
   const details: ErrorDetails = {};
-  const limit = fields.limit;
-  if (typeof limit === 'string' && (rateLimits as readonly string[]).includes(limit)) {
-    details.limit = limit as RateLimit;
-  }
+  const limit = toRateLimit(fields.limit);
+  if (limit) details.limit = limit;
   const header = Number(response.headers.get('retry-after') ?? NaN);
   const retryAfter = seconds(fields.retry_after_seconds, 1) ?? seconds(header, 1);
   if (retryAfter !== undefined) details.retryAfterSeconds = retryAfter;

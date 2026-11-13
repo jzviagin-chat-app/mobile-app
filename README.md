@@ -211,11 +211,10 @@ Two sides, switched by the session (`src/root/RootNavigator.tsx`):
 
 **The login is one route with a state machine.** `/auth` shows `LoginScreen`, which renders the step held
 by `LoginFlowStore.step` (`phone` → `code` → `name`). Separate routes would let Android's back button pop a
-screen while the store still says "code requested"; with one route the store is the only truth. Back (the
-Android button via `BackHandler`, or "Change number") calls `login.back()`, which **clears the whole login**
-(an empty phone step, nothing saved). On the code step it waits for the same countdown as "Send a new
-code" (the button is greyed out, the Android button does nothing); on the first step the back button
-leaves the app as usual. Each step's main buttons sit at the bottom (`Screen`'s `footer`) and rise with the
+screen while the store still says "code requested"; with one route the store is the only truth. Only
+"Change number" goes back: it calls `login.back()`, which **clears the whole login** (an empty phone step,
+nothing saved). Android's back button (`BackHandler`) does nothing on the code and name steps, and leaves
+the app as usual on the first step (owner, 2026-11-13). Each step's main buttons sit at the bottom (`Screen`'s `footer`) and rise with the
 keyboard. Steps switch without an animation: a fade-in that starts invisible left a step blank for
 seconds on a busy emulator.
 
@@ -281,15 +280,16 @@ phone ──requestCode──► code ──verify: logged_in──────�
   min) → `register {registration_token, display_name, device}` → tokens. `device` = platform + the phone's
   name (`expo-device`: the name from the phone's settings on Android; the model on iOS, where the name is just
   "iPhone" without a special entitlement). A new SMS login signs the previous phone out (one primary device).
-- **Back clears everything** (owner rule): every field, and the saved progress. Entering a number again is
-  always a real `otp/request`, with a fresh countdown from the server's answer. Back ("Change number", the
-  Android button) waits for the **full** resend countdown, even an hour after the hour's last code; the
-  name step has **no way back** (the code is verified: the only way is on).
+- **"Change number" clears the login** (owner rule): every field, and the saved progress, but not the
+  waits (below). It works **at any time** on the code step, because a number's wait is only that number's
+  (owner, 2026-11-13): typed again, that number shows its countdown on the phone step; another number is
+  free. Only a **device lock** disables it, with the same countdown as "Send a new code" on both buttons
+  ("Change number in 47:12"). The name step has **no way back** (the code is verified: the only way is on).
 - **The code step stays in every case** (owner, 2026-11-11): a wrong code shows the tries left
   (`attempts_left`) and the field takes the next code at once; after the 5th wrong try
   (`too_many_attempts`) the field is disabled until a new code is sent. If the server ever asks to wait
   before the next try (`retry_after_seconds` on `invalid_code`: not sent today), the field is disabled
-  with a countdown. The resend countdown only ever grows: the 202's wait (an hour after the window's last
+  with a countdown. A number's wait only ever grows: the 202's wait (an hour after the window's last
   code) beats the cooldown a verify error reports.
 - **Expiry starts over** (owner, 2026-11-12): when the code or the registration token expires, an empty
   phone step with a notice: while the app is open (a reaction on the clock, also right after the app
@@ -303,13 +303,21 @@ phone ──requestCode──► code ──verify: logged_in──────�
   server's wait. A `resend_cooldown` on the phone step means a code went out within the minute (a lost
   reply, a reinstall, a sign-in on another phone): whether it can still be used is unknown, so the app
   waits instead of opening the code step (owner, 2026-11-13).
-- **Each number's wait for a new code outlives the login** (owner, 2026-11-13). Every wait the server
-  gives (the 202's `resend_after_seconds`, the verify errors', a 429's) is also a block for that number, so
-  after signing in and out, going back or an expiry, that number counts down on the phone step without
-  asking the server. On the code step the resend button shows it. These blocks are kept in their own
-  secure item (`send-blocks`), apart from the login progress: going back, signing in and signing out don't
-  clear them, a block only ever gets later, and expired ones are dropped. Only a fresh install clears them.
-- **The code and name steps survive closing the app:** `{country, step, phone, resend / code expiry, code
+- **The waits are two kinds of send blocks** (owner, 2026-11-13), the only record of them, in their own
+  secure item (`send-blocks`) apart from the login progress:
+  1. **the device lock** (`all`): every number, from `ip_hour` / `ip_day` (this network) or the daily SMS
+     cap; it disables Continue, "Send a new code" and "Change number";
+  2. **one wait per number** (`numbers`): its cooldown or hour / day limit, from the 202's
+     `resend_after_seconds`, the verify errors' and the 429s. That number counts down on the phone step
+     (and on the resend button); other numbers are free.
+
+  The server never limits by device: "device" here means this network's IP address. A 202's long wait
+  (this code used a window's last slot) doesn't say yet whether the window is the number's or the
+  network's: the app reads a planned `limit` field (`ip_*` → device lock) and treats a wait without it as
+  the number's; if it was the network's, the next number's `429 ip_hour` locks the device (a refused
+  request costs nothing). Going back, signing in and signing out don't clear the blocks; a block only ever
+  gets later and is removed when its time is up (also from storage). Only a fresh install clears them.
+- **The code and name steps survive closing the app:** `{country, step, phone, code expiry, code
   state, tries left, registration token}` is saved in its own secure-store item after every change on those
   steps and restored at startup while the code / registration token is still valid. The phone step is
   never saved. Without it a restart would cost a new SMS or hit the cooldown (`429`). The registration
