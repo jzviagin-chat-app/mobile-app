@@ -1,13 +1,8 @@
-import { useTranslation } from 'react-i18next';
+import { HomeScreen } from '@/features/home';
+import { useRootStore } from '@/root';
 
-import { Screen, Text } from '@/ui';
-
-// Placeholder for the logged-in home (chats list). Unreachable until login exists (step 2).
+// Route files stay thin: they pick the stores a screen needs and render it.
 export default function HomeRoute() {
-  const { t } = useTranslation();
-  return (
-    <Screen centered>
-      <Text variant="title">{t('home.title')}</Text>
-    </Screen>
-  );
+  const { auth } = useRootStore();
+  return <HomeScreen auth={auth} />;
 }

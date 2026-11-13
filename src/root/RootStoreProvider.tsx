@@ -2,26 +2,48 @@ import { getLocales } from 'expo-localization';
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
 import { I18nextProvider } from 'react-i18next';
 
+import { createLoginProgressStorage, createSendBlocksStorage } from '@/features/auth';
+import { createAuthApi } from '@/lib/api';
+import { createClock } from '@/lib/clock';
+import { getConfig } from '@/lib/config';
+import { getDeviceInfo } from '@/lib/device';
+import { isFirstLaunchAfterInstall } from '@/lib/fresh-install';
+import { createTokenStorage } from '@/lib/token-storage';
+
 import { RootStore, type RootStoreDeps } from './root-store';
 
 const RootStoreContext = createContext<RootStore | null>(null);
 
+/** The real dependencies: the server from the config, secure storage, this phone, the real clock. */
+function realDeps(): RootStoreDeps {
+  return {
+    locales: getLocales(),
+    api: createAuthApi({ baseUrl: getConfig().apiUrl }),
+    tokenStorage: createTokenStorage(),
+    loginProgress: createLoginProgressStorage(),
+    sendBlocks: createSendBlocksStorage(),
+    device: getDeviceInfo(),
+    clock: createClock(),
+    isFirstLaunchAfterInstall,
+  };
+}
+
 type Props = {
-  /** Overrides for the real dependencies (tests pass fakes). The app passes nothing. */
-  deps?: Partial<RootStoreDeps>;
+  /** Tests pass fakes (src/root/test-deps.ts). The app passes nothing and gets the real ones. */
+  deps?: RootStoreDeps;
   children: ReactNode;
 };
 
 /**
- * Creates the app's one RootStore, restores the session, disposes it on unmount, and gives it (and its i18n
- * instance) to everything inside. `useState`'s initializer runs only on the first render, so re-renders
- * never create a second store.
+ * Creates the app's one RootStore, restores the saved session and login progress, disposes it on
+ * unmount, and gives it (and its i18n instance) to everything inside. `useState`'s initializer runs only on
+ * the first render, so re-renders never create a second store.
  */
 export function RootStoreProvider({ deps, children }: Props) {
-  const [store] = useState(() => new RootStore({ locales: deps?.locales ?? getLocales() }));
+  const [store] = useState(() => new RootStore(deps ?? realDeps()));
 
   useEffect(() => {
-    void store.auth.restore();
+    void store.restore();
     return () => store.dispose();
   }, [store]);
 
