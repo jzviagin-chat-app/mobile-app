@@ -272,9 +272,9 @@ another phone, not in backups; readable for background work after the first unlo
 **The login** (`LoginFlowStore`, a state machine; actions return `{ok}` / `{ok:false, error}`, never throw):
 ```
 phone ──requestCode──► code ──verify: logged_in──────────────► signed in
-  ▲                     │   └─verify: registration_required──► name ──register──► signed in
-  ├────── back() ───────┘                                       │   (no way back from the name step)
-  └──────────── the code / registration token expired ──────────┘   (everything cleared, with a notice)
+  ▲                     │ ▲ └─verify: registration_required──► name ──register──► signed in
+  ├────── back() ───────┘ └─ the code expired: stays, "Send a new code"   │ (no way back from the name step)
+  └──────────── the registration token expired ─────────────────────────┘ (everything cleared, with a notice)
 ```
 - `otp/request {phone}` → SMS → `otp/verify {phone, code, device}` → tokens, or a registration token (10
   min) → `register {registration_token, display_name, device}` → tokens. `device` = platform + the phone's
@@ -291,14 +291,15 @@ phone ──requestCode──► code ──verify: logged_in──────�
   before the next try (`retry_after_seconds` on `invalid_code`: not sent today), the field is disabled
   with a countdown. A number's wait only ever grows: the 202's wait (an hour after the window's last
   code) beats the cooldown a verify error reports.
-- **Expiry starts over** (owner, 2026-11-12): when the code or the registration token expires, an empty
-  phone step with a notice: while the app is open (a reaction on the clock, also right after the app
-  returns from the background), at startup, or when the server rejects the registration token
-  (`invalid_registration_token`). Every deadline is an absolute time on the phone's clock, so time spent
-  closed counts: reopened inside the window, the step resumes with only the time left.
-- **A server `code_expired` keeps the code step** (owner, 2026-11-13): "That code has expired. Request a
-  new one.", typing still allowed and the buttons as usual; a new code clears it. (The server gives the
-  same answer for an expired, a used and a missing code.)
+- **An expired code keeps the code step** (owner, 2026-11-13): "That code has expired. Request a new
+  one.", typing still allowed and the buttons as usual ("Send a new code" after the number's wait); a new
+  code clears it. Noticed while the app is open (a reaction on the clock, also right after the app returns
+  from the background), at startup, or from the server's `code_expired` (its answer for an expired, a used
+  and a missing code).
+- **An expired registration token starts over** (owner, 2026-11-12): an empty phone step with "That took
+  too long", while the app is open, at startup, or from the server (`invalid_registration_token`).
+- Every deadline is an absolute time on the phone's clock, so time spent closed counts: reopened inside
+  the window, the step resumes with only the time left.
 - **Refused code requests are shown live and remembered; a refusal never moves the login on.**
   `429 rate_limited` names its `limit`: `resend_cooldown`, `phone_hour` and `phone_day` block that number
   (Continue disabled while it's typed; other numbers work); `ip_hour` / `ip_day` and the daily SMS cap

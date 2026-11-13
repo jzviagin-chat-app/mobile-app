@@ -332,16 +332,20 @@ describe('LoginScreen: code step', () => {
       expect(screen.getByText('New code in 59:58')).toBeOnTheScreen();
     });
 
-    it('the code expires on screen: an empty phone step saying so', async () => {
+    it('the code expires on screen: the code step stays, says so, and resend opens a new code', async () => {
       const deps = await renderLogin({}, withClock());
       await toCodeStep(deps);
       await tick(299);
-      expect(screen.getByTestId('otp-input')).toBeOnTheScreen();
+      expect(screen.queryByText('That code has expired. Request a new one.')).toBeNull();
       await tick(1);
-      expect(await screen.findByTestId('phone-input')).toHaveDisplayValue('');
       expect(
-        screen.getByText('That code has expired. Enter your number to get a new one.'),
+        await screen.findByText('That code has expired. Request a new one.'),
       ).toBeOnTheScreen();
+      expect(screen.getByTestId('otp-input')).toBeEnabled();
+      expect(screen.getByTestId('code-resend')).toBeEnabled(); // the 60 s wait ended long ago
+      await fireEvent.press(screen.getByTestId('code-resend'));
+      expect(await screen.findByText('New code in 1:00')).toBeOnTheScreen();
+      expect(screen.queryByText('That code has expired. Request a new one.')).toBeNull();
     });
 
     it('phone step: a number limit disables Continue for that number only, with a live wait', async () => {

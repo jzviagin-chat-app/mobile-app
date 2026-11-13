@@ -37,7 +37,6 @@
       "continue": "Continue"
     },
     "notice": {
-      "code_expired": "That code has expired. Enter your number to get a new one.",
       "registration_expired": "That took too long. Verify your number again.",
       "already_registered": "This number already has an account. Sign in with a new code."
     },

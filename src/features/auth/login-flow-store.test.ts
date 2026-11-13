@@ -714,9 +714,9 @@ describe('LoginFlowStore: waits survive closing the app', () => {
       // Closed again past the wait (the code expired too by then: 60 + 40 + 200 s > 300 s).
       advance(200);
       const after = await reopen(during);
-      expect(after.login.step).toBe('phone');
-      expect(after.login.notice).toBe('code_expired');
-      expect(after.login.blockFor(PHONE)).toBeNull();
+      expect(after.login.step).toBe('code');
+      expect(after.login.codeState).toBe('expired');
+      expect(after.login.secondsUntilResend).toBe(0);
     });
   });
 
@@ -784,19 +784,25 @@ describe('LoginFlowStore: waits survive closing the app', () => {
 // Owner (2026-11-12): when the code or the registration token expires, back to the first step, whether
 // the app is open, closed, or reopened in time (the closed time is subtracted).
 describe('LoginFlowStore: expiry', () => {
-  it('the code expires while the app is open: the phone step with a notice, by itself', async () => {
+  it('the code expires while the app is open: the code step stays and says so (owner, 2026-11-13)', async () => {
     const clock = createClock();
     const s = setup(null, null, clock);
     s.api.requestCode.mockResolvedValue({ resend_after_seconds: 400, expires_in_seconds: 300 });
     await s.login.requestCode(PHONE);
     await jest.advanceTimersByTimeAsync(299_000);
-    expect(s.login.step).toBe('code');
+    expect(s.login.codeState).toBe('active');
     await jest.advanceTimersByTimeAsync(1_000);
-    expect(s.login.step).toBe('phone');
-    expect(s.login.notice).toBe('code_expired');
-    expect(s.progress.value).toBeNull();
-    // The resend wait outlives the code: kept for that number (here 100 s left).
-    expect(s.login.blockFor(PHONE)).toEqual({ reason: 'number', seconds: 100 });
+    expect(s.login.step).toBe('code');
+    expect(s.login.phone).toBe(PHONE);
+    expect(s.login.codeState).toBe('expired');
+    expect(s.login.notice).toBeNull();
+    expect(s.progress.value).toMatchObject({ step: 'code', codeState: 'expired' });
+    // "Send a new code" follows the number's wait (here 100 s left), then opens a fresh code.
+    expect(s.login.secondsUntilResend).toBe(100);
+    await jest.advanceTimersByTimeAsync(100_000);
+    s.api.requestCode.mockResolvedValue(codeSent);
+    await expect(s.login.resendCode()).resolves.toEqual({ ok: true });
+    expect(s.login.codeState).toBe('active');
   });
 
   it('a locked code expires too (too many tries, then the 5 minutes run out)', async () => {
@@ -807,8 +813,8 @@ describe('LoginFlowStore: expiry', () => {
     await s.login.requestCode(PHONE);
     await s.login.verifyCode('000000');
     await jest.advanceTimersByTimeAsync(300_000);
-    expect(s.login.step).toBe('phone');
-    expect(s.login.notice).toBe('code_expired');
+    expect(s.login.step).toBe('code');
+    expect(s.login.codeState).toBe('expired');
   });
 
   it('the registration token expires while the app is open', async () => {
@@ -827,14 +833,15 @@ describe('LoginFlowStore: expiry', () => {
     expect(s.progress.value).toBeNull();
   });
 
-  it('closed until after the code expired: reopens on the phone step with the notice', async () => {
+  it('closed until after the code expired: reopens on the code step saying so', async () => {
     const first = await onCodeStep();
     advance(301);
     const { login, progress } = await reopen(first);
-    expect(login.step).toBe('phone');
-    expect(login.phone).toBeNull();
-    expect(login.notice).toBe('code_expired');
-    expect(progress.value).toBeNull();
+    expect(login.step).toBe('code');
+    expect(login.phone).toBe(PHONE);
+    expect(login.codeState).toBe('expired');
+    expect(login.secondsUntilResend).toBe(0);
+    expect(progress.value).toMatchObject({ codeState: 'expired' });
   });
 
   it('closed until after the registration token expired: the phone step with the notice', async () => {
@@ -860,8 +867,8 @@ describe('LoginFlowStore: expiry', () => {
     await jest.advanceTimersByTimeAsync(179_000);
     expect(login.step).toBe('code');
     await jest.advanceTimersByTimeAsync(1_000);
-    expect(login.step).toBe('phone');
-    expect(login.notice).toBe('code_expired');
+    expect(login.step).toBe('code');
+    expect(login.codeState).toBe('expired');
   });
 
   it('reopened inside the registration window: the name step, expiring after the time left', async () => {

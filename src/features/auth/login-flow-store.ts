@@ -14,12 +14,12 @@ import { activeBlocks, noBlocks, type SendBlocks, type SendBlocksStorage } from 
 export type LoginStep = 'phone' | 'code' | 'name';
 
 /** A message shown on the step the user lands on after the flow moved them (e.g. back to the phone). */
-export type LoginNotice = 'code_expired' | 'registration_expired' | 'already_registered';
+export type LoginNotice = 'registration_expired' | 'already_registered';
 
 /**
  * `too_many_attempts`: this code can't be used any more; a new one must be requested (typing disabled).
- * `expired`: the server said `code_expired`; the user is told so and stays on the code step (owner,
- * 2026-11-13), typing still allowed (a newer code may arrive).
+ * `expired`: its time ran out (phone clock or the server's `code_expired`); the user is told so and stays
+ * on the code step (owner, 2026-11-13), typing still allowed (a newer code may arrive).
  */
 export type CodeState = 'active' | 'too_many_attempts' | 'expired';
 
@@ -44,7 +44,8 @@ const NAME_MAX = 50;
  *   phone ──requestCode──► code ──verify: logged_in──────────────► signed in (reset)
  *     ▲                     │   └─verify: registration_required──► name ──register──► signed in
  *     ├────── back() ───────┘                                       │
- *     └──────────── the code / registration token expired ──────────┘   (all cleared, with a notice)
+ *     └──────────── the registration token expired ─────────────────┘   (all cleared, with a notice)
+ *   (the code expired: the code step stays and says so; "Send a new code" is the way on)
  *
  * Rules (owner, 2026-11-09…12):
  * - Back to the phone step clears everything, in memory and in storage; the phone step is never saved.
@@ -52,9 +53,10 @@ const NAME_MAX = 50;
  *   or the daily SMS cap): then it counts down with "Send a new code". Android's back button does nothing
  *   on the code and name steps; the name step has no way back (owner, 2026-11-13).
  * - Too many wrong tries keep the code step (input disabled) until a new code is sent.
- * - When the code or the registration token expires, the login starts over: while the app is open (a
- *   reaction on the clock), at startup, or when the server says so. Deadlines are absolute times on the
- *   phone's clock, so time the app spent closed counts too.
+ * - When the code expires (the phone's clock while open or at startup, or the server's `code_expired`), the
+ *   code step stays and says so; "Send a new code" is the way on (owner, 2026-11-13). When the registration
+ *   token expires, the login starts over at the phone step. Deadlines are absolute times on the phone's
+ *   clock, so time the app spent closed counts too.
  * - The code and name steps are saved after every change; the server's send blocks in their own item. Every
  *   wait survives a restart.
  * - Send blocks are the only record of waits (owner, 2026-11-13): one device lock (`blocks.all`: every
@@ -321,7 +323,10 @@ export class LoginFlowStore {
   }
 
   private expiredAt(now: number): 'code' | 'name' | null {
-    if (this.step === 'code') return (this.codeExpiresAt ?? 0) <= now ? 'code' : null;
+    if (this.step === 'code') {
+      const ended = this.codeState !== 'expired' && (this.codeExpiresAt ?? 0) <= now;
+      return ended ? 'code' : null;
+    }
     if (this.step === 'name') {
       const valid = this.registrationToken !== null && (this.registrationExpiresAt ?? 0) > now;
       return valid ? null : 'name';
@@ -329,9 +334,22 @@ export class LoginFlowStore {
     return null;
   }
 
-  /** The code / registration token expired: start over (the number's resend wait stays a send block). */
+  /**
+   * The code expired: stay on the code step and say so, "Send a new code" is the way on (owner,
+   * 2026-11-13). The registration token expired: start over (the number's wait stays a send block).
+   */
   private expire = flow(function* (this: LoginFlowStore, what: 'code' | 'name') {
-    yield this.startOver(what === 'code' ? 'code_expired' : 'registration_expired');
+    if (what === 'name') {
+      yield this.startOver('registration_expired');
+      return;
+    }
+    yield this.markCodeExpired();
+  });
+
+  private markCodeExpired = flow(function* (this: LoginFlowStore) {
+    this.codeState = 'expired';
+    this.codeRetryAvailableAt = null;
+    yield this.save();
   });
 
   /** The verify errors this flow handles itself (null: not one of them). */
@@ -356,9 +374,7 @@ export class LoginFlowStore {
         return fail('too_many_attempts');
       case 'code_expired':
         // Stay on the code step and say so: the number is right, a new code is one tap away.
-        this.codeState = 'expired';
-        this.codeRetryAvailableAt = null;
-        yield this.save();
+        yield this.markCodeExpired();
         return fail('code_expired');
       default:
         return null;
