@@ -190,6 +190,13 @@ throwing (a throw cancels queued actions and reaches the error boundary). No for
 `dispose()`, for app-wide side effects (signed out → `queryClient.clear()`; later: close the socket).
 When the cause is known, call the action directly instead.
 
+**Saving a store's state** (e.g. the login progress) is one of them, so no action has to remember it: a
+getter describes what is saved (`null` = delete the item), and a reaction hands every change to a
+`Persister` (`src/lib/persister.ts`), which writes one value at a time, always the newest, and skips a value
+the item already holds. Actions only change fields. At startup, `restore()` tells it what was loaded
+(`known`) and writes the restored result once (a reaction sees only changes in memory, not what storage
+still holds).
+
 ## 6. Navigation and the session
 
 Expo Router: **every file under `src/app/` is a route**; `_layout.tsx` wraps its folder (a stack here);
@@ -322,8 +329,8 @@ phone ──requestCode──► code ──verify: logged_in──────�
   request costs nothing). Going back, signing in and signing out don't clear the blocks; a block only ever
   gets later and is removed when its time is up (also from storage). Only a fresh install clears them.
 - **The code and name steps survive closing the app:** `{country, step, phone, code expiry, code
-  state, tries left, registration token}` is saved in its own secure-store item after every change on those
-  steps and restored at startup while the code / registration token is still valid. The phone step is
+  state, tries left, registration token}` is saved automatically in its own secure-store item after every
+  change on those steps and restored at startup while the code / registration token is still valid. The phone step is
   never saved. Without it a restart would cost a new SMS or hit the cooldown (`429`). The registration
   token is deleted on use, expiry, back and sign-in.
 - `login_conflict` → retried once automatically; `already_registered` → an empty phone step with a notice.

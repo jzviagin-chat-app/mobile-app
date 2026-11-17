@@ -637,7 +637,7 @@ describe('LoginFlowStore: the wait for a new code outlives the login', () => {
     advance(61);
     const { login, blocks } = await reopen(first);
     expect(login.blockFor(PHONE)).toBeNull();
-    expect(blocks.value).toEqual({ all: null, numbers: [] });
+    expect(blocks.value).toBeNull();
   });
 
   it('each block is removed from storage when its time is up (while the app runs)', async () => {
@@ -656,7 +656,7 @@ describe('LoginFlowStore: the wait for a new code outlives the login', () => {
       numbers: [{ phone: PHONE, until: expect.any(Number) }],
     });
     await jest.advanceTimersByTimeAsync(60_000);
-    expect(blocks.value).toEqual({ all: null, numbers: [] });
+    expect(blocks.value).toBeNull(); // the last one ended: the item is deleted
   });
 
   it('a block never gets shorter: a later, shorter wait keeps the longer one', async () => {
@@ -902,5 +902,76 @@ describe('LoginFlowStore: expiry', () => {
     await login.restore();
     expect(login.step).toBe('phone');
     expect(login.notice).toBeNull();
+  });
+});
+
+describe('LoginFlowStore: saving is automatic', () => {
+  it('every change on the code step reaches storage, with no save call in the action', async () => {
+    const { login, api, progress } = await onCodeStep();
+    expect(progress.value).toMatchObject({ step: 'code', phone: PHONE, codeState: 'active' });
+    api.verifyCode.mockRejectedValue(invalidCode(3, 60));
+    await login.verifyCode('000000');
+    expect(progress.value).toMatchObject({ attemptsLeft: 3 });
+    api.verifyCode.mockRejectedValue(tooManyAttempts(60));
+    await login.verifyCode('000000');
+    expect(progress.value).toMatchObject({ codeState: 'too_many_attempts', attemptsLeft: 0 });
+  });
+
+  it('back deletes the saved progress; the send blocks stay', async () => {
+    const { login, progress, blocks } = await onCodeStep();
+    login.back();
+    await login.saved();
+    expect(progress.value).toBeNull();
+    expect(blocks.value?.numbers).toEqual([{ phone: PHONE, until: Date.now() + 60_000 }]);
+  });
+
+  it('restoring writes nothing back when nothing changed', async () => {
+    const first = await onCodeStep();
+    const { login, progress, blocks } = await reopen(first);
+    await login.saved();
+    expect(login.step).toBe('code');
+    expect(progress.save).not.toHaveBeenCalled();
+    expect(blocks.save).not.toHaveBeenCalled();
+  });
+
+  it('a slow write never lets an older value land last', async () => {
+    const { login, api, progress } = await onCodeStep();
+    let finish: () => void = () => undefined;
+    progress.save.mockImplementationOnce(
+      (value: LoginProgress) =>
+        new Promise<void>((resolve) => {
+          progress.value = value;
+          finish = resolve;
+        }),
+    );
+    api.verifyCode.mockRejectedValueOnce(invalidCode(3, 60));
+    await login.verifyCode('000000'); // its write hangs
+    api.verifyCode.mockRejectedValueOnce(invalidCode(2, 60));
+    await login.verifyCode('000000'); // queued behind it
+    expect(progress.value).toMatchObject({ attemptsLeft: 3 });
+    finish();
+    await login.saved();
+    expect(progress.value).toMatchObject({ attemptsLeft: 2 });
+  });
+
+  it('after dispose nothing is saved any more', async () => {
+    const { login, api, progress } = await onCodeStep();
+    login.dispose();
+    api.verifyCode.mockRejectedValue(invalidCode(3, 60));
+    await login.verifyCode('000000');
+    expect(login.attemptsLeft).toBe(3);
+    expect(progress.value).toMatchObject({ attemptsLeft: null });
+  });
+
+  it('a failed save is logged without the value, and the flow goes on', async () => {
+    const warn = jest.spyOn(log, 'warn').mockImplementation(() => undefined);
+    const s = setup();
+    s.progress.save.mockRejectedValue(new Error('keystore'));
+    s.api.requestCode.mockResolvedValue(codeSent);
+    expect(await s.login.requestCode(PHONE)).toEqual({ ok: true });
+    await s.login.saved();
+    expect(s.login.step).toBe('code');
+    expect(warn).toHaveBeenCalledWith('Could not save the login progress');
+    warn.mockRestore();
   });
 });

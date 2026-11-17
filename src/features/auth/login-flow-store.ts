@@ -3,6 +3,7 @@ import { flow, makeAutoObservable, reaction } from 'mobx';
 import { ApiError, type AuthApi, type DeviceIn, type LoggedIn } from '@/lib/api';
 import type { Clock } from '@/lib/clock';
 import { log } from '@/lib/log';
+import { createPersister, type Persister } from '@/lib/persister';
 import { tokensFromReply, type StoredTokens } from '@/lib/token-storage';
 
 import { canSignIn, DEFAULT_COUNTRY } from './countries';
@@ -57,8 +58,9 @@ const NAME_MAX = 50;
  *   code step stays and says so; "Send a new code" is the way on (owner, 2026-11-13). When the registration
  *   token expires, the login starts over at the phone step. Deadlines are absolute times on the phone's
  *   clock, so time the app spent closed counts too.
- * - The code and name steps are saved after every change; the server's send blocks in their own item. Every
- *   wait survives a restart.
+ * - The code and name steps are saved automatically after every change (a reaction on `progress`), the
+ *   server's send blocks in their own item (a reaction on `blocks`): actions only change fields. Every wait
+ *   survives a restart.
  * - Send blocks are the only record of waits (owner, 2026-11-13): one device lock (`blocks.all`: every
  *   number, from `ip_*` or the daily SMS cap) and one wait per number (`blocks.numbers`: its cooldown or
  *   hour / day limit). They outlive the code step: after sign-in, sign-out, back or expiry, a waiting
@@ -85,22 +87,36 @@ export class LoginFlowStore {
   blocks: SendBlocks = noBlocks;
 
   private readonly deps: LoginFlowDeps;
-  private readonly stopExpiry: () => void;
-  private readonly stopPrune: () => void;
+  private readonly progressWriter: Persister<LoginProgress>;
+  private readonly blocksWriter: Persister<SendBlocks>;
+  private readonly disposers: (() => void)[];
 
   constructor(deps: LoginFlowDeps) {
     this.deps = deps;
+    this.progressWriter = createPersister(deps.progress, () =>
+      log.warn('Could not save the login progress'),
+    ); // the flow still works, it just won't survive a restart
+    this.blocksWriter = createPersister(deps.blocks, () =>
+      log.warn('Could not save the send blocks'),
+    ); // still enforced until the app closes
     // Read-only helpers stay plain functions: as actions they would be untracked, and the countdowns
     // that call them would never update.
     makeAutoObservable<
       this,
-      'deps' | 'stopExpiry' | 'stopPrune' | 'blockUntil' | 'secondsUntil' | 'expiredAt'
+      | 'deps'
+      | 'progressWriter'
+      | 'blocksWriter'
+      | 'disposers'
+      | 'blockUntil'
+      | 'secondsUntil'
+      | 'expiredAt'
     >(
       this,
       {
         deps: false,
-        stopExpiry: false,
-        stopPrune: false,
+        progressWriter: false,
+        blocksWriter: false,
+        disposers: false,
         blockFor: false,
         blockUntil: false,
         secondsUntil: false,
@@ -108,27 +124,44 @@ export class LoginFlowStore {
       },
       { autoBind: true },
     );
-    // While the app is open: start over when the code / registration token expires. `expired` reads the
-    // clock only on the code and name steps, so the clock ticks only then.
-    this.stopExpiry = reaction(
-      () => this.expired,
-      (expired) => {
-        if (expired) void this.expire(expired);
-      },
-    );
-    // Each send block is removed (also from storage) when its time is up. Reads the clock only while a
-    // block exists, so the clock ticks only then.
-    this.stopPrune = reaction(
-      () => this.blockEnded,
-      (ended) => {
-        if (ended) void this.pruneBlocks();
-      },
-    );
+    this.disposers = [
+      // Saving: whatever an action changed, once it ends (null deletes the item).
+      reaction(
+        () => this.progress,
+        (progress) => this.progressWriter.write(progress),
+      ),
+      reaction(
+        () => this.savedBlocks,
+        (blocks) => this.blocksWriter.write(blocks),
+      ),
+      // While the app is open: the code / registration token expired. `expired` reads the clock only on
+      // the code and name steps, so the clock ticks only then.
+      reaction(
+        () => this.expired,
+        (expired) => {
+          if (expired) this.expire(expired);
+        },
+      ),
+      // Each send block is removed when its time is up. Reads the clock only while a block exists, so the
+      // clock ticks only then.
+      reaction(
+        () => this.blockEnded,
+        (ended) => {
+          if (ended) this.pruneBlocks();
+        },
+      ),
+    ];
   }
 
   dispose(): void {
-    this.stopExpiry();
-    this.stopPrune();
+    for (const stop of this.disposers) stop();
+  }
+
+  /** Resolves when every change so far is in storage (tests; nothing in the app needs to wait). */
+  saved(): Promise<void> {
+    return Promise.all([this.progressWriter.idle(), this.blocksWriter.idle()]).then(
+      () => undefined,
+    );
   }
 
   /** Seconds until a new code may be sent to this number: its own wait or the device lock (live). */
@@ -207,13 +240,12 @@ export class LoginFlowStore {
         this.registrationExpiresAt = Date.now() + reply.expires_in * 1000;
         this.step = 'name';
         this.notice = null;
-        yield this.save();
         return ok;
       } catch (error) {
         // Another login of this user won a race: the server asks to retry with the same code (once).
         if (error instanceof ApiError && error.code === 'login_conflict' && attempt === 1) continue;
         if (error instanceof ApiError) {
-          const handled: LoginResult | null = yield this.codeRefused(error);
+          const handled = this.codeRefused(error);
           if (handled) return handled;
         }
         return toLoginError(error);
@@ -227,7 +259,7 @@ export class LoginFlowStore {
     if (name.length < 1 || name.length > NAME_MAX) return fail('invalid_name');
     const token = this.registrationToken;
     if (!token || (this.registrationExpiresAt ?? 0) <= Date.now()) {
-      yield this.startOver('registration_expired');
+      this.startOver('registration_expired');
       return fail('registration_expired');
     }
     try {
@@ -236,9 +268,9 @@ export class LoginFlowStore {
       return ok;
     } catch (error) {
       if (error instanceof ApiError && error.code === 'invalid_registration_token') {
-        yield this.startOver('registration_expired');
+        this.startOver('registration_expired');
       } else if (error instanceof ApiError && error.code === 'already_registered') {
-        yield this.startOver('already_registered');
+        this.startOver('already_registered');
       }
       return toLoginError(error);
     }
@@ -248,13 +280,13 @@ export class LoginFlowStore {
    * Back to the phone step ("Change number", Android back) from the code step: clears everything. Ignored
    * while the countdown runs, and on the name step.
    */
-  back = flow(function* (this: LoginFlowStore) {
+  back(): void {
     if (!this.canGoBack) return;
-    yield this.reset();
-  });
+    this.reset();
+  }
 
-  /** An empty flow and nothing saved (after back, expiry and sign-in). The send blocks stay. */
-  reset = flow(function* (this: LoginFlowStore) {
+  /** An empty flow (after back, expiry and sign-in): the saved progress is deleted. The send blocks stay. */
+  reset(): void {
     this.country = DEFAULT_COUNTRY;
     this.step = 'phone';
     this.phone = null;
@@ -262,12 +294,7 @@ export class LoginFlowStore {
     this.registrationToken = null;
     this.registrationExpiresAt = null;
     this.notice = null;
-    try {
-      yield this.deps.progress.clear();
-    } catch {
-      log.warn('Could not clear the login progress');
-    }
-  });
+  }
 
   /**
    * At startup: the send blocks still running, and a saved code / name step if its code / registration
@@ -277,15 +304,17 @@ export class LoginFlowStore {
   restore = flow(function* (this: LoginFlowStore) {
     try {
       const saved: SendBlocks | null = yield this.deps.blocks.load();
-      const active = activeBlocks(saved ?? noBlocks, Date.now());
-      this.blocks = active;
-      if (saved && JSON.stringify(saved) !== JSON.stringify(active)) yield this.saveBlocks(active);
+      this.blocksWriter.known(saved);
+      this.blocks = activeBlocks(saved ?? noBlocks, Date.now());
+      // The reactions save only what changes in memory; storage may still hold the blocks that ended.
+      this.blocksWriter.write(this.savedBlocks);
     } catch {
       log.error('Could not read the saved send blocks');
     }
     let saved: LoginProgress | null = null;
     try {
       saved = yield this.deps.progress.load();
+      this.progressWriter.known(saved); // restoring it below writes nothing back
     } catch {
       log.error('Could not read the saved login progress');
     }
@@ -300,10 +329,33 @@ export class LoginFlowStore {
     this.registrationToken = saved.registrationToken;
     this.registrationExpiresAt = saved.registrationExpiresAt;
     const expired = this.expiredAt(Date.now());
-    if (expired) yield this.expire(expired);
+    if (expired) this.expire(expired);
+    // Expired while closed: memory went null → step → null, which the reaction doesn't see as a change.
+    this.progressWriter.write(this.progress);
   });
 
   // ---- internals ----
+
+  /** What is saved of the login: the code / name step (null on the phone step: the item is deleted). */
+  private get progress(): LoginProgress | null {
+    if (this.step === 'phone' || this.phone === null) return null;
+    return {
+      country: this.country,
+      step: this.step,
+      phone: this.phone,
+      codeExpiresAt: this.codeExpiresAt,
+      codeState: this.codeState,
+      attemptsLeft: this.attemptsLeft,
+      codeRetryAvailableAt: this.codeRetryAvailableAt,
+      registrationToken: this.registrationToken,
+      registrationExpiresAt: this.registrationExpiresAt,
+    };
+  }
+
+  /** What is saved of the send blocks (null when none is left: the item is deleted). */
+  private get savedBlocks(): SendBlocks | null {
+    return this.blocks.all || this.blocks.numbers.length > 0 ? this.blocks : null;
+  }
 
   /** A send block's time is up (reads the clock only while there is one). */
   private get blockEnded(): boolean {
@@ -312,9 +364,9 @@ export class LoginFlowStore {
     return Number.isFinite(first) && this.deps.clock.now >= first;
   }
 
-  private pruneBlocks = flow(function* (this: LoginFlowStore) {
-    yield this.saveBlocks(activeBlocks(this.blocks, Date.now()));
-  });
+  private pruneBlocks(): void {
+    this.blocks = activeBlocks(this.blocks, Date.now());
+  }
 
   /** Which deadline has passed on the code / name step (reads the clock only there). */
   private get expired(): 'code' | 'name' | null {
@@ -338,48 +390,42 @@ export class LoginFlowStore {
    * The code expired: stay on the code step and say so, "Send a new code" is the way on (owner,
    * 2026-11-13). The registration token expired: start over (the number's wait stays a send block).
    */
-  private expire = flow(function* (this: LoginFlowStore, what: 'code' | 'name') {
-    if (what === 'name') {
-      yield this.startOver('registration_expired');
-      return;
-    }
-    yield this.markCodeExpired();
-  });
+  private expire(what: 'code' | 'name'): void {
+    if (what === 'name') this.startOver('registration_expired');
+    else this.markCodeExpired();
+  }
 
-  private markCodeExpired = flow(function* (this: LoginFlowStore) {
+  private markCodeExpired(): void {
     this.codeState = 'expired';
     this.codeRetryAvailableAt = null;
-    yield this.save();
-  });
+  }
 
   /** The verify errors this flow handles itself (null: not one of them). */
-  private codeRefused = flow(function* (this: LoginFlowStore, error: ApiError) {
+  private codeRefused(error: ApiError): LoginResult | null {
     const now = Date.now();
     const { attemptsLeft, resendAfterSeconds, retryAfterSeconds } = error.details;
     if (resendAfterSeconds !== undefined && this.phone) {
-      yield this.waitForResend(this.phone, now + resendAfterSeconds * 1000);
+      this.blockNumber(this.phone, now + resendAfterSeconds * 1000);
     }
     switch (error.code) {
       case 'invalid_code':
         this.attemptsLeft = attemptsLeft ?? null;
         this.codeRetryAvailableAt =
           retryAfterSeconds !== undefined ? now + retryAfterSeconds * 1000 : null;
-        yield this.save();
         return fail('invalid_code');
       case 'too_many_attempts':
         this.codeState = 'too_many_attempts';
         this.attemptsLeft = 0;
         this.codeRetryAvailableAt = null;
-        yield this.save();
         return fail('too_many_attempts');
       case 'code_expired':
         // Stay on the code step and say so: the number is right, a new code is one tap away.
-        yield this.markCodeExpired();
+        this.markCodeExpired();
         return fail('code_expired');
       default:
         return null;
     }
-  });
+  }
 
   private sendCode = flow(function* (this: LoginFlowStore, phone: string) {
     const now = Date.now();
@@ -388,13 +434,11 @@ export class LoginFlowStore {
         yield this.deps.api.requestCode(phone);
       this.toCode(phone, now + sent.expires_in_seconds * 1000);
       this.clearCodeAttempts();
-      yield this.save();
       const until = now + sent.resend_after_seconds * 1000;
       // A long wait names its limit (planned in auth-service): the network's locks every number. Without
       // a name it's this number's (owner, 2026-11-13).
-      if (sent.limit === 'ip_hour' || sent.limit === 'ip_day')
-        yield this.blockAll('network', until);
-      else yield this.waitForResend(phone, until);
+      if (sent.limit === 'ip_hour' || sent.limit === 'ip_day') this.blockAll('network', until);
+      else this.blockNumber(phone, until);
       return ok;
     } catch (error) {
       if (!(error instanceof ApiError)) return toLoginError(error);
@@ -402,17 +446,17 @@ export class LoginFlowStore {
       if (error.code === 'rate_limited' && wait !== undefined) {
         const until = now + wait * 1000;
         if (error.details.limit === 'ip_hour' || error.details.limit === 'ip_day') {
-          yield this.blockAll('network', until);
+          this.blockAll('network', until);
         } else {
           // resend_cooldown (a code went out within the last minute: maybe before a lost reply, a reinstall
           // or a sign-in; whether it can still be used is unknown, so wait instead of guessing), phone_hour,
           // phone_day, or no limit named. The flow stays where it is.
-          yield this.waitForResend(phone, until);
+          this.blockNumber(phone, until);
         }
         return fail('blocked');
       }
       if (error.code === 'sms_unavailable' && wait !== undefined) {
-        yield this.blockAll('sms', now + wait * 1000);
+        this.blockAll('sms', now + wait * 1000);
         return fail('blocked');
       }
       return toLoginError(error);
@@ -424,15 +468,6 @@ export class LoginFlowStore {
     this.codeExpiresAt = codeExpiresAt;
     this.step = 'code';
   }
-
-  /**
-   * When this number may get a new code: its send block (outlives the code step, see the class comment).
-   * Only ever later: after the hour's last code the 202's wait is longer than the cooldown a verify error
-   * reports.
-   */
-  private waitForResend = flow(function* (this: LoginFlowStore, phone: string, until: number) {
-    yield this.blockNumber(phone, until);
-  });
 
   /** A fresh code: typing allowed again. */
   private clearCodeAttempts(): void {
@@ -448,14 +483,14 @@ export class LoginFlowStore {
 
   private finish = flow(function* (this: LoginFlowStore, reply: LoggedIn) {
     yield this.deps.completeLogin(tokensFromReply(reply, Date.now()));
-    yield this.reset(); // the send blocks stay: after a sign-out the number still waits (owner, 2026-11-13)
+    this.reset(); // the send blocks stay: after a sign-out the number still waits (owner, 2026-11-13)
   });
 
   /** Back to an empty phone step, with a message saying why. */
-  private startOver = flow(function* (this: LoginFlowStore, notice: LoginNotice) {
-    yield this.reset();
+  private startOver(notice: LoginNotice): void {
+    this.reset();
     this.notice = notice;
-  });
+  }
 
   private blockUntil(phone: string | null): { reason: SendBlock['reason']; until: number } | null {
     const all = this.blocks.all;
@@ -469,49 +504,20 @@ export class LoginFlowStore {
     return Math.max(0, Math.ceil((until - this.deps.clock.now) / 1000));
   }
 
-  private blockNumber = flow(function* (this: LoginFlowStore, phone: string, until: number) {
+  /**
+   * When this number may get a new code: its send block (outlives the code step, see the class comment).
+   * Only ever later: after the hour's last code the 202's wait is longer than the cooldown a verify error
+   * reports.
+   */
+  private blockNumber(phone: string, until: number): void {
     const current = activeBlocks(this.blocks, Date.now());
     const existing = current.numbers.find((block) => block.phone === phone);
     if (existing && existing.until >= until) return; // only ever later
     const numbers = current.numbers.filter((block) => block.phone !== phone);
-    yield this.saveBlocks({ ...current, numbers: [...numbers, { phone, until }] });
-  });
-
-  private blockAll = flow(function* (
-    this: LoginFlowStore,
-    reason: 'network' | 'sms',
-    until: number,
-  ) {
-    yield this.saveBlocks({ ...activeBlocks(this.blocks, Date.now()), all: { reason, until } });
-  });
-
-  private async saveBlocks(blocks: SendBlocks): Promise<void> {
-    this.blocks = blocks;
-    try {
-      await this.deps.blocks.save(blocks);
-    } catch {
-      log.warn('Could not save the send blocks'); // still enforced until the app closes
-    }
+    this.blocks = { ...current, numbers: [...numbers, { phone, until }] };
   }
 
-  /** Saves the code / name step (the phone step is never saved). */
-  private async save(): Promise<void> {
-    if (this.step === 'phone' || this.phone === null) return;
-    const progress: LoginProgress = {
-      country: this.country,
-      step: this.step,
-      phone: this.phone,
-      codeExpiresAt: this.codeExpiresAt,
-      codeState: this.codeState,
-      attemptsLeft: this.attemptsLeft,
-      codeRetryAvailableAt: this.codeRetryAvailableAt,
-      registrationToken: this.registrationToken,
-      registrationExpiresAt: this.registrationExpiresAt,
-    };
-    try {
-      await this.deps.progress.save(progress);
-    } catch {
-      log.warn('Could not save the login progress'); // the flow still works, it just won't survive a restart
-    }
+  private blockAll(reason: 'network' | 'sms', until: number): void {
+    this.blocks = { ...activeBlocks(this.blocks, Date.now()), all: { reason, until } };
   }
 }
