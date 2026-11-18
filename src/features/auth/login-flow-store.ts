@@ -1,4 +1,4 @@
-import { flow, makeAutoObservable, reaction } from 'mobx';
+import { flow, makeAutoObservable, observable, reaction } from 'mobx';
 
 import { ApiError, type AuthApi, type DeviceIn, type LoggedIn } from '@/lib/api';
 import type { Clock } from '@/lib/clock';
@@ -26,6 +26,9 @@ export type CodeState = 'active' | 'too_many_attempts' | 'expired';
 
 /** Why sending a code is blocked right now (shown with a live countdown). */
 export type SendBlock = { reason: 'number' | 'network' | 'sms'; seconds: number };
+
+/** Every number is blocked until `until` (Unix ms): this network's limit or the daily SMS cap. */
+export type DeviceLock = NonNullable<SendBlocks['all']>;
 
 export type LoginFlowDeps = {
   api: Pick<AuthApi, 'requestCode' | 'verifyCode' | 'register'>;
@@ -59,10 +62,10 @@ const NAME_MAX = 50;
  *   token expires, the login starts over at the phone step. Deadlines are absolute times on the phone's
  *   clock, so time the app spent closed counts too.
  * - The code and name steps are saved automatically after every change (a reaction on `progress`), the
- *   server's send blocks in their own item (a reaction on `blocks`): actions only change fields. Every wait
+ *   server's send blocks in their own item (a reaction on `savedBlocks`): actions only change fields. Every wait
  *   survives a restart.
- * - Send blocks are the only record of waits (owner, 2026-11-13): one device lock (`blocks.all`: every
- *   number, from `ip_*` or the daily SMS cap) and one wait per number (`blocks.numbers`: its cooldown or
+ * - Send blocks are the only record of waits (owner, 2026-11-13): one device lock (`deviceLock`: every
+ *   number, from `ip_*` or the daily SMS cap) and one wait per number (`numberWaits`: its cooldown or
  *   hour / day limit). They outlive the code step: after sign-in, sign-out, back or expiry, a waiting
  *   number shows its countdown instead of asking the server; other numbers are free unless the device is
  *   locked. Each entry is removed when its time is up. A refused request (`429 resend_cooldown` included)
@@ -84,7 +87,10 @@ export class LoginFlowStore {
   registrationToken: string | null = null;
   registrationExpiresAt: number | null = null;
   notice: LoginNotice | null = null;
-  blocks: SendBlocks = noBlocks;
+  /** The device lock: every number waits (null: none). */
+  deviceLock: DeviceLock | null = null;
+  /** One wait per number: E.164 → until (Unix ms). Changed in place; the reaction on `savedBlocks` saves it. */
+  readonly numberWaits = observable.map<string, number>();
 
   private readonly deps: LoginFlowDeps;
   private readonly progressWriter: Persister<LoginProgress>;
@@ -171,7 +177,7 @@ export class LoginFlowStore {
 
   /** Seconds until the device lock ends (every number blocked: network limit, daily SMS cap). */
   get secondsUntilUnlock(): number {
-    return this.secondsUntil(this.blocks.all?.until ?? 0);
+    return this.secondsUntil(this.deviceLock?.until ?? 0);
   }
 
   /** Seconds until the next try of this code, if the server asked to wait after a wrong one. */
@@ -305,7 +311,9 @@ export class LoginFlowStore {
     try {
       const saved: SendBlocks | null = yield this.deps.blocks.load();
       this.blocksWriter.known(saved);
-      this.blocks = activeBlocks(saved ?? noBlocks, Date.now());
+      const active = activeBlocks(saved ?? noBlocks, Date.now());
+      this.deviceLock = active.all;
+      this.numberWaits.replace(active.numbers.map(({ phone, until }) => [phone, until]));
       // The reactions save only what changes in memory; storage may still hold the blocks that ended.
       this.blocksWriter.write(this.savedBlocks);
     } catch {
@@ -352,20 +360,31 @@ export class LoginFlowStore {
     };
   }
 
-  /** What is saved of the send blocks (null when none is left: the item is deleted). */
+  /**
+   * What is saved of the send blocks (null when none is left: the item is deleted). It reads every part
+   * (iterating the map tracks all of it), so any change, in place too, makes this run again and the reaction
+   * save the result.
+   */
   private get savedBlocks(): SendBlocks | null {
-    return this.blocks.all || this.blocks.numbers.length > 0 ? this.blocks : null;
+    const lock = this.deviceLock;
+    const all = lock ? { reason: lock.reason, until: lock.until } : null; // read both: tracked in place too
+    const numbers = [...this.numberWaits].map(([phone, until]) => ({ phone, until }));
+    return all || numbers.length > 0 ? { all, numbers } : null;
   }
 
   /** A send block's time is up (reads the clock only while there is one). */
   private get blockEnded(): boolean {
-    const ends = [this.blocks.all?.until, ...this.blocks.numbers.map((block) => block.until)];
+    const ends = [this.deviceLock?.until, ...this.numberWaits.values()];
     const first = Math.min(...ends.filter((until): until is number => until !== undefined));
     return Number.isFinite(first) && this.deps.clock.now >= first;
   }
 
   private pruneBlocks(): void {
-    this.blocks = activeBlocks(this.blocks, Date.now());
+    const now = Date.now();
+    if (this.deviceLock && this.deviceLock.until <= now) this.deviceLock = null;
+    for (const [phone, until] of this.numberWaits) {
+      if (until <= now) this.numberWaits.delete(phone);
+    }
   }
 
   /** Which deadline has passed on the code / name step (reads the clock only there). */
@@ -493,10 +512,10 @@ export class LoginFlowStore {
   }
 
   private blockUntil(phone: string | null): { reason: SendBlock['reason']; until: number } | null {
-    const all = this.blocks.all;
-    const number = phone ? this.blocks.numbers.find((block) => block.phone === phone) : undefined;
-    if (all && (!number || all.until >= number.until)) return all;
-    return number ? { reason: 'number', until: number.until } : null;
+    const all = this.deviceLock;
+    const number = phone ? this.numberWaits.get(phone) : undefined;
+    if (all && (number === undefined || all.until >= number)) return all;
+    return number !== undefined ? { reason: 'number', until: number } : null;
   }
 
   private secondsUntil(until: number): number {
@@ -510,14 +529,12 @@ export class LoginFlowStore {
    * reports.
    */
   private blockNumber(phone: string, until: number): void {
-    const current = activeBlocks(this.blocks, Date.now());
-    const existing = current.numbers.find((block) => block.phone === phone);
-    if (existing && existing.until >= until) return; // only ever later
-    const numbers = current.numbers.filter((block) => block.phone !== phone);
-    this.blocks = { ...current, numbers: [...numbers, { phone, until }] };
+    const current = this.numberWaits.get(phone);
+    if (current !== undefined && current >= until) return; // only ever later
+    this.numberWaits.set(phone, until);
   }
 
   private blockAll(reason: 'network' | 'sms', until: number): void {
-    this.blocks = { ...activeBlocks(this.blocks, Date.now()), all: { reason, until } };
+    this.deviceLock = { reason, until };
   }
 }

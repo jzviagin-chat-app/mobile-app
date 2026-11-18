@@ -1,3 +1,5 @@
+import { runInAction } from 'mobx';
+
 import { ApiError, NetworkError, type CodeSent } from '@/lib/api';
 import { toApiError } from '@/lib/api/errors';
 import { createClock, type Clock } from '@/lib/clock';
@@ -973,5 +975,33 @@ describe('LoginFlowStore: saving is automatic', () => {
     expect(s.login.step).toBe('code');
     expect(warn).toHaveBeenCalledWith('Could not save the login progress');
     warn.mockRestore();
+  });
+});
+
+describe('LoginFlowStore: send blocks changed in place are saved too', () => {
+  it('a number added to, changed in or removed from the map reaches storage', async () => {
+    const { login, blocks } = await onCodeStep();
+    const later = Date.now() + 600_000;
+    runInAction(() => login.numberWaits.set(OTHER, later));
+    await login.saved();
+    expect(blocks.value?.numbers).toContainEqual({ phone: OTHER, until: later });
+    runInAction(() => login.numberWaits.set(OTHER, later + 1000));
+    await login.saved();
+    expect(blocks.value?.numbers).toContainEqual({ phone: OTHER, until: later + 1000 });
+    runInAction(() => login.numberWaits.clear());
+    await login.saved();
+    expect(blocks.value).toBeNull();
+  });
+
+  it('the device lock changed in place reaches storage', async () => {
+    const { login, api, blocks } = await onCodeStep();
+    api.requestCode.mockRejectedValue(rateLimited('ip_hour', 100));
+    jest.advanceTimersByTime(60_000);
+    await login.resendCode();
+    const lock = login.deviceLock;
+    if (!lock) throw new Error('expected a device lock');
+    runInAction(() => (lock.until += 5000));
+    await login.saved();
+    expect(blocks.value?.all).toEqual({ reason: 'network', until: lock.until });
   });
 });
