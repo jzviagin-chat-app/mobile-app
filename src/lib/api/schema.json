@@ -1,0 +1,771 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "auth-service",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/healthz": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Healthz",
+        "operationId": "healthz_healthz_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "boolean"
+                      }
+                    ]
+                  },
+                  "type": "object",
+                  "title": "Response Healthz Healthz Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/healthz": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Public Healthz",
+        "operationId": "public_healthz_auth_healthz_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "boolean"
+                      }
+                    ]
+                  },
+                  "type": "object",
+                  "title": "Response Public Healthz Auth Healthz Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/otp/request": {
+      "post": {
+        "tags": [
+          "otp"
+        ],
+        "summary": "Request Otp",
+        "description": "Send a code by SMS. The same 202 for every number, registered or not.",
+        "operationId": "request_otp_auth_otp_request_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OtpRequestIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OtpRequestOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_phone"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "rate_limited: `limit` (resend_cooldown, phone_hour, phone_day, ip_hour, ip_day) and `retry_after_seconds` (also the Retry-After header)"
+          },
+          "503": {
+            "description": "sms_unavailable (Retry-After when the daily SMS cap is reached)"
+          }
+        }
+      }
+    },
+    "/auth/otp/verify": {
+      "post": {
+        "tags": [
+          "otp"
+        ],
+        "summary": "Verify Otp",
+        "description": "Check the code. Known number: logged in on this phone, which replaces the previous primary\ndevice. New number: a registration token for /register.",
+        "operationId": "verify_otp_auth_otp_verify_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OtpVerifyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/LoggedInOut"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RegistrationRequiredOut"
+                    }
+                  ],
+                  "title": "Response Verify Otp Auth Otp Verify Post"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_phone, unsupported_platform, invalid_code (retry; `attempts_left`), too_many_attempts and code_expired (request a new one). The code errors add `resend_after_seconds` (0: now) when it can be read"
+          },
+          "403": {
+            "description": "account_blocked"
+          },
+          "409": {
+            "description": "login_conflict (a parallel login; retry)"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "tokens_unavailable"
+          }
+        }
+      }
+    },
+    "/auth/register": {
+      "post": {
+        "tags": [
+          "register"
+        ],
+        "summary": "Register",
+        "description": "Create the account for a verified phone number, plus this device, and log it in.",
+        "operationId": "register_auth_register_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoggedInOut"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "unsupported_platform"
+          },
+          "401": {
+            "description": "invalid_registration_token (verify the phone again)"
+          },
+          "409": {
+            "description": "already_registered (log in instead)"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "tokens_unavailable"
+          }
+        }
+      }
+    },
+    "/auth/token/refresh": {
+      "post": {
+        "tags": [
+          "tokens"
+        ],
+        "summary": "Refresh Tokens",
+        "description": "Swap the refresh token for a new one plus a new access token. If the reply gets lost, send\nthe same refresh token again: that's safe, after any delay.",
+        "operationId": "refresh_tokens_auth_token_refresh_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoggedInOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "invalid_refresh_token (log in again by SMS)"
+          },
+          "403": {
+            "description": "account_blocked"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "tokens_unavailable"
+          }
+        }
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "tags": [
+          "tokens"
+        ],
+        "summary": "Logout",
+        "description": "Sign this device out: its refresh tokens stop working at once, its access token at auth\nat once and at chat-service through the revoked list. Calling it again also answers 204.",
+        "operationId": "logout_auth_logout_post",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "invalid_token"
+          },
+          "503": {
+            "description": "tokens_unavailable"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/auth/devices": {
+      "get": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "List Devices",
+        "operationId": "list_devices_auth_devices_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DevicesOut"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "invalid_token"
+          },
+          "403": {
+            "description": "action_not_allowed (not the primary) / account_blocked"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/auth/devices/{device_id}": {
+      "delete": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "Remove Device",
+        "description": "Sign out one of my linked devices. Already signed out: also 204.",
+        "operationId": "remove_device_auth_devices__device_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Device Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "invalid_token"
+          },
+          "403": {
+            "description": "action_not_allowed (not the primary, or itself) / account_blocked"
+          },
+          "404": {
+            "description": "not_found"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/.well-known/jwks.json": {
+      "get": {
+        "tags": [
+          "jwks"
+        ],
+        "summary": "Jwks",
+        "operationId": "jwks_auth__well_known_jwks_json_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "items": {
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "type": "object",
+                  "title": "Response Jwks Auth  Well Known Jwks Json Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "DeviceIn": {
+        "properties": {
+          "platform": {
+            "type": "string",
+            "enum": [
+              "ios",
+              "android",
+              "web"
+            ],
+            "title": "Platform"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "examples": [
+              "Jacob's iPhone"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "platform"
+        ],
+        "title": "DeviceIn",
+        "description": "The app installation that is logging in (one `devices` row per login). SMS login takes only\nios/android (answered 400 unsupported_platform); \"web\" is for linked devices later."
+      },
+      "DeviceOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "platform": {
+            "type": "string",
+            "title": "Platform"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "last_seen_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Seen At"
+          },
+          "current": {
+            "type": "boolean",
+            "title": "Current"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "platform",
+          "name",
+          "role",
+          "created_at",
+          "last_seen_at",
+          "current"
+        ],
+        "title": "DeviceOut"
+      },
+      "DevicesOut": {
+        "properties": {
+          "devices": {
+            "items": {
+              "$ref": "#/components/schemas/DeviceOut"
+            },
+            "type": "array",
+            "title": "Devices"
+          }
+        },
+        "type": "object",
+        "required": [
+          "devices"
+        ],
+        "title": "DevicesOut"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "LoggedInOut": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "logged_in",
+            "title": "Status",
+            "default": "logged_in"
+          },
+          "access_token": {
+            "type": "string",
+            "title": "Access Token"
+          },
+          "token_type": {
+            "type": "string",
+            "const": "Bearer",
+            "title": "Token Type",
+            "default": "Bearer"
+          },
+          "expires_in": {
+            "type": "integer",
+            "title": "Expires In"
+          },
+          "refresh_token": {
+            "type": "string",
+            "title": "Refresh Token"
+          }
+        },
+        "type": "object",
+        "required": [
+          "access_token",
+          "expires_in",
+          "refresh_token"
+        ],
+        "title": "LoggedInOut",
+        "description": "Answer of otp/verify (known number), register and token/refresh."
+      },
+      "OtpRequestIn": {
+        "properties": {
+          "phone": {
+            "type": "string",
+            "maxLength": 32,
+            "title": "Phone",
+            "examples": [
+              "+972501234567"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "phone"
+        ],
+        "title": "OtpRequestIn"
+      },
+      "OtpRequestOut": {
+        "properties": {
+          "resend_after_seconds": {
+            "type": "integer",
+            "title": "Resend After Seconds"
+          },
+          "expires_in_seconds": {
+            "type": "integer",
+            "title": "Expires In Seconds"
+          }
+        },
+        "type": "object",
+        "required": [
+          "resend_after_seconds",
+          "expires_in_seconds"
+        ],
+        "title": "OtpRequestOut"
+      },
+      "OtpVerifyIn": {
+        "properties": {
+          "phone": {
+            "type": "string",
+            "maxLength": 32,
+            "title": "Phone",
+            "examples": [
+              "+972501234567"
+            ]
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^[0-9]{6}$",
+            "title": "Code",
+            "examples": [
+              "123456"
+            ]
+          },
+          "device": {
+            "$ref": "#/components/schemas/DeviceIn"
+          }
+        },
+        "type": "object",
+        "required": [
+          "phone",
+          "code",
+          "device"
+        ],
+        "title": "OtpVerifyIn"
+      },
+      "RefreshIn": {
+        "properties": {
+          "refresh_token": {
+            "type": "string",
+            "maxLength": 100,
+            "title": "Refresh Token"
+          }
+        },
+        "type": "object",
+        "required": [
+          "refresh_token"
+        ],
+        "title": "RefreshIn"
+      },
+      "RegisterIn": {
+        "properties": {
+          "registration_token": {
+            "type": "string",
+            "maxLength": 100,
+            "title": "Registration Token"
+          },
+          "display_name": {
+            "type": "string",
+            "maxLength": 50,
+            "minLength": 1,
+            "title": "Display Name",
+            "examples": [
+              "Jacob"
+            ]
+          },
+          "device": {
+            "$ref": "#/components/schemas/DeviceIn"
+          }
+        },
+        "type": "object",
+        "required": [
+          "registration_token",
+          "display_name",
+          "device"
+        ],
+        "title": "RegisterIn"
+      },
+      "RegistrationRequiredOut": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "registration_required",
+            "title": "Status",
+            "default": "registration_required"
+          },
+          "registration_token": {
+            "type": "string",
+            "title": "Registration Token"
+          },
+          "expires_in": {
+            "type": "integer",
+            "title": "Expires In"
+          }
+        },
+        "type": "object",
+        "required": [
+          "registration_token",
+          "expires_in"
+        ],
+        "title": "RegistrationRequiredOut"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}

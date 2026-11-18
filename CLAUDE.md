@@ -24,8 +24,10 @@ SessionStart hook (`.claude/hooks/load-design.sh`).
 
 ## Rules for this repo
 - This is the foundation of the real app, not a demo: structure, naming and tests as for production.
-- Never log or display tokens, SMS codes or full phone numbers. Tokens only in secure storage; the
-  registration token only in memory. Log only through `src/lib/log.ts` (`console` is a lint error).
+- Never log tokens, SMS codes or phone numbers; never display tokens or other people's full numbers (the
+  user's own number may be shown to them, decided 2026-11-09). Tokens and the login progress only in secure
+  storage; the registration token is deleted on use, expiry, back and sign-in (saved so a restart costs no
+  SMS, decided 2026-11-09). Log only through `src/lib/log.ts` (`console` is a lint error).
 - Expo changes every SDK: check the versioned docs (SDK 58) before using an Expo / React Native API.
   Native packages only with `npx expo install`; never edit `ios/` / `android/` (generated from `app.config.ts`).
 - Layers: `src/app` (thin routes) → `src/root` → `src/features/<name>` → `src/lib`, `src/ui`. Never upwards;

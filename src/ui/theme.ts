@@ -12,6 +12,8 @@ export type Palette = {
   onPrimary: string;
   border: string;
   danger: string;
+  /** Shadows under floating panels (dropdowns). */
+  shadow: string;
 };
 
 const palettes: Record<ColorSchemeName, Palette> = {
@@ -24,6 +26,7 @@ const palettes: Record<ColorSchemeName, Palette> = {
     onPrimary: '#FFFFFF',
     border: '#D0D5DD',
     danger: '#D92D20',
+    shadow: '#101828',
   },
   dark: {
     background: '#0B1220',
@@ -34,6 +37,7 @@ const palettes: Record<ColorSchemeName, Palette> = {
     onPrimary: '#0B1220',
     border: '#344054',
     danger: '#F97066',
+    shadow: '#000000',
   },
 };
 

@@ -31,8 +31,8 @@ describe('pickLanguage (the app follows the phone)', () => {
 
 describe('createI18n', () => {
   it('translates synchronously in both languages', () => {
-    expect(createI18n('en').t('auth.loggedOut.title')).toBe('Welcome to Walkie Talkie');
-    expect(createI18n('he').t('auth.loggedOut.title')).toBe('ברוכים הבאים ל-Walkie Talkie');
+    expect(createI18n('en').t('auth.phone.continue')).toBe('Continue');
+    expect(createI18n('he').t('auth.phone.continue')).toBe('המשך');
   });
 
   it('has the same keys in Hebrew and English', () => {
