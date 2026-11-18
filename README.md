@@ -7,7 +7,7 @@ GitHub org `jzviagin-chat-app`; the system design (services, contracts, phases) 
 **This is the real app, not a throwaway demo.** It starts with only the login flow, but its structure is the
 foundation for everything that comes later (chats over WebSocket, local message store, media, push, E2E).
 
-> **Status: login (phase 8 step 2).** Sign in by SMS code (phone → code → display name for a new number),
+> **Status: login done (phase 8 step 2 ✅).** Sign in by SMS code (phone → code → display name for a new number),
 > stay signed in across restarts, sign out. Hebrew or English, light or dark, following the phone.
 > Next: the session (step 3: token refresh, the devices screen).
 
@@ -436,7 +436,7 @@ against React Native Directory and fails the build. Exclude only Expo-owned tran
 Each step is agreed with the owner, built on a branch and merged before the next (chat-infra `PLAN.md` phase 8).
 
 1. ✅ **Design + skeleton**: this README, tooling, CI; the app boots to an empty logged-out screen.
-2. 🔨 **Login**: phone → SMS code (`otp/request`, `otp/verify`) → display name for a new number (`register`) →
+2. ✅ **Login**: phone → SMS code (`otp/request`, `otp/verify`) → display name for a new number (`register`) →
    tokens in secure storage; **sign-out** (moved here from step 3, to test the login repeatedly). API client
    + generated types, country picker, login progress that survives a restart.
 3. **Session**: refresh (§7: before a request + on 401, one at a time), sign-out on `invalid_refresh_token`,
