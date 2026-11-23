@@ -38,7 +38,9 @@
     },
     "notice": {
       "registration_expired": "That took too long. Verify your number again.",
-      "already_registered": "This number already has an account. Sign in with a new code."
+      "already_registered": "This number already has an account. Sign in with a new code.",
+      "session_ended": "You were signed out. Sign in again.",
+      "account_blocked": "This account is blocked."
     },
     "errors": {
       "invalid_phone": "That doesn't look like a mobile number.",

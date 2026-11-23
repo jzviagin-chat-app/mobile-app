@@ -1,3 +1,4 @@
+import { ApiError, SignedOutError } from '@/lib/api';
 import type { StoredTokens } from '@/lib/token-storage';
 
 import { RootStore } from './root-store';
@@ -99,5 +100,41 @@ describe('RootStore', () => {
     root.queryClient.setQueryData(['example'], { ok: true });
     root.dispose();
     expect(root.queryClient.getQueryData(['example'])).toBeUndefined();
+  });
+
+  describe('the session wiring', () => {
+    const expired = { access: 'a1', refresh: 'r1', accessExpiresAt: 0 };
+
+    it('a refused refresh during a call signs out and the phone step says why (dev detail too)', async () => {
+      jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const deps = testDeps({ tokenStorage: memoryItem(expired) });
+      deps.fakeApi.refreshTokens.mockRejectedValueOnce(new ApiError(401, 'invalid_refresh_token'));
+      const root = new RootStore(deps);
+      await root.restore();
+      const call = jest.fn();
+      await expect(root.authorized(call)).rejects.toBeInstanceOf(SignedOutError);
+      expect(call).not.toHaveBeenCalled();
+      expect(root.auth.status).toBe('signedOut');
+      expect(root.login.notice).toBe('session_ended');
+      expect(root.login.noticeDetail).toMatch(
+        /^refresh → 401 invalid_refresh_token · \d\d:\d\d:\d\d$/,
+      );
+      root.dispose();
+    });
+
+    it('403 account_blocked on a call signs out with its notice', async () => {
+      jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const deps = testDeps({
+        tokenStorage: memoryItem({ ...expired, accessExpiresAt: Date.now() + 600_000 }),
+      });
+      const root = new RootStore(deps);
+      await root.restore();
+      const blocked = new ApiError(403, 'account_blocked');
+      await expect(root.authorized(() => Promise.reject(blocked))).rejects.toBe(blocked);
+      await Promise.resolve();
+      expect(root.auth.status).toBe('signedOut');
+      expect(root.login.notice).toBe('account_blocked');
+      root.dispose();
+    });
   });
 });

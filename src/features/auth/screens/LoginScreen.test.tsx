@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen } from '@testing-library/react-native';
+import { useEffect } from 'react';
 import * as ReactNative from 'react-native';
 import { useKeyboardState } from 'react-native-keyboard-controller';
 
@@ -69,9 +70,14 @@ function captureBackButton() {
   };
 }
 
+let currentRoot: ReturnType<typeof useRootStore> | undefined;
+
 function Login() {
-  const { login } = useRootStore();
-  return <LoginScreen login={login} />;
+  const root = useRootStore();
+  useEffect(() => {
+    currentRoot = root;
+  }, [root]);
+  return <LoginScreen login={root.login} />;
 }
 
 async function renderLogin(
@@ -131,6 +137,35 @@ describe('LoginScreen: languages and themes', () => {
     deps.fakeApi.verifyCode.mockResolvedValue(registrationRequired);
     await fireEvent.changeText(screen.getByTestId('otp-input'), '123456');
     expect(await screen.findByRole('header', { name: title })).toBeOnTheScreen();
+  });
+});
+
+describe('LoginScreen: the session ended', () => {
+  it.each([
+    ['en', 'light', 'session_ended', 'You were signed out. Sign in again.'],
+    ['he', 'dark', 'session_ended', 'יצאת מהחשבון. יש להיכנס שוב.'],
+    ['en', 'dark', 'account_blocked', 'This account is blocked.'],
+    ['he', 'light', 'account_blocked', 'החשבון הזה חסום.'],
+  ] as const)('%s, %s: %s', async (language, scheme, notice, text) => {
+    await renderLogin({ language, scheme });
+    await screen.findByTestId('phone-input');
+    await act(async () =>
+      currentRoot!.login.showNotice(notice, 'refresh → 401 invalid_refresh_token · 14:03:12'),
+    );
+    expect(screen.getByText(text)).toHaveStyle({ color: getTheme(scheme).colors.danger });
+    expect(screen.getByTestId('notice-detail')).toHaveTextContent(
+      'refresh → 401 invalid_refresh_token · 14:03:12',
+    );
+  });
+
+  it('shows no detail line without one (release builds), and the next request clears the notice', async () => {
+    const deps = await renderLogin();
+    await screen.findByTestId('phone-input');
+    await act(async () => currentRoot!.login.showNotice('session_ended', null));
+    expect(screen.getByText('You were signed out. Sign in again.')).toBeOnTheScreen();
+    expect(screen.queryByTestId('notice-detail')).toBeNull();
+    await toCodeStep(deps);
+    expect(currentRoot!.login.notice).toBeNull();
   });
 });
 

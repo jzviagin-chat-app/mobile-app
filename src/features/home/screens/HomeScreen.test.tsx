@@ -15,7 +15,12 @@ function Home() {
 
 async function renderHome(language = 'en', scheme: 'light' | 'dark' = 'light') {
   jest.spyOn(ReactNative, 'useColorScheme').mockReturnValue(scheme);
-  const tokenStorage = memoryItem<StoredTokens>({ access: 'a', refresh: 'r', accessExpiresAt: 1 });
+  // A still-valid access token: sign-out sends it as is (an expired one is refreshed first: AuthStore tests).
+  const tokenStorage = memoryItem<StoredTokens>({
+    access: 'a',
+    refresh: 'r',
+    accessExpiresAt: Date.now() + 600_000,
+  });
   const deps = testDeps({ locales: [{ languageCode: language }], tokenStorage });
   await render(
     <RootStoreProvider deps={deps}>
@@ -44,6 +49,7 @@ describe('HomeScreen', () => {
     const { deps, tokenStorage } = await renderHome();
     await fireEvent.press(await screen.findByTestId('sign-out'));
     expect(tokenStorage.value).toBeNull();
+    expect(deps.fakeApi.refreshTokens).not.toHaveBeenCalled();
     expect(deps.fakeApi.logout).toHaveBeenCalledWith('a');
   });
 });

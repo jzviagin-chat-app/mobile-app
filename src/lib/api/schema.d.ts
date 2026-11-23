@@ -287,6 +287,11 @@ export interface components {
             resend_after_seconds: number;
             /** Expires In Seconds */
             expires_in_seconds: number;
+            /**
+             * Limit
+             * @description Only when resend_after_seconds is longer than the resend cooldown: the window this code filled (the 429's names). phone_*: only this number waits; ip_*: every number from this network.
+             */
+            limit?: ("phone_hour" | "phone_day" | "ip_hour" | "ip_day") | null;
         };
         /** OtpVerifyIn */
         OtpVerifyIn: {

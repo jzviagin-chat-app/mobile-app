@@ -10,9 +10,12 @@ export {
 export {
   ApiError,
   NetworkError,
+  SignedOutError,
   errorCodes,
+  isApiError,
   rateLimits,
   type ErrorCode,
   type ErrorDetails,
   type RateLimit,
 } from './errors';
+export { createAuthorized, type Authorized, type AuthorizedDeps } from './authorized';

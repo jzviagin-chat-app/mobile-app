@@ -77,6 +77,20 @@ export class NetworkError extends Error {
   }
 }
 
+/** A logged-in call without a session: signed out (or signed out meanwhile). No request was sent for it. */
+export class SignedOutError extends Error {
+  override name = 'SignedOutError';
+
+  constructor() {
+    super('Signed out');
+  }
+}
+
+/** True when `error` is the server's answer `status` + `code`. */
+export function isApiError(error: unknown, status: number, code: ErrorCode): error is ApiError {
+  return error instanceof ApiError && error.status === status && error.code === code;
+}
+
 function isErrorCode(value: unknown): value is ErrorCode {
   return typeof value === 'string' && (errorCodes as readonly string[]).includes(value);
 }

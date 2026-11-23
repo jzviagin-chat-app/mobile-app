@@ -7,9 +7,9 @@ GitHub org `jzviagin-chat-app`; the system design (services, contracts, phases) 
 **This is the real app, not a throwaway demo.** It starts with only the login flow, but its structure is the
 foundation for everything that comes later (chats over WebSocket, local message store, media, push, E2E).
 
-> **Status: login done (phase 8 step 2 ✅).** Sign in by SMS code (phone → code → display name for a new number),
-> stay signed in across restarts, sign out. Hebrew or English, light or dark, following the phone.
-> Next: the session (step 3: token refresh, the devices screen).
+> **Status: login done (phase 8 step 2 ✅); step 3 (the session) in progress: token refresh built.** Sign in
+> by SMS code (phone → code → display name for a new number), stay signed in across restarts, sign out.
+> Hebrew or English, light or dark, following the phone. Next: the devices screen (step 3, part 2).
 
 ---
 
@@ -257,24 +257,45 @@ another phone, not in backups; readable for background work after the first unlo
 - The iOS Keychain survives uninstalling the app, so the first launch after an install
   (`src/lib/fresh-install.ts`: a marker file in the app's documents folder, which is deleted with the app)
   wipes the saved tokens and login progress.
-- **Sign out** clears the tokens on the phone at once, then sends `POST /auth/logout` without waiting. If that
-  fails (offline; or 401 for an expired access token until refresh exists), the device stays active on the
-  server until the next SMS login replaces it.
+- **Sign out** clears the tokens on the phone at once (memory, then storage), then tells the server in the
+  background: if the access token expires within 60 s it is refreshed first (nothing saved), then
+  `POST /auth/logout`. If that fails (offline), the device stays active on the server until the next SMS login
+  replaces it.
 
-**Refresh (decided 2026-11-09, built in step 3):**
-- Before each logged-in request the API client awaits `getAccessToken()` (= `auth.freshAccessToken()`):
-  if the access token expires within 60 s, it refreshes first.
-- On `401 invalid_token` (a wrong clock, a revoked device, a rotated key): refresh once, retry the request
-  once; if the token already changed meanwhile, just retry with the new one.
-- **One refresh at a time:** a shared `refreshPromise`; logged-in requests wait on it, unauthenticated ones
-  never do.
-- Outcomes: success → **save the new tokens first, then use them**; a lost reply → retry with the same
-  refresh token (auth-service allows it); offline → keep the tokens, fail the request with "no connection",
-  **never sign out**; `401 invalid_refresh_token` → signed out; `403 account_blocked` → signed out with a
-  message; `403 action_not_allowed` → an error on that screen.
-- No timer for normal calls (timers stop while the phone sleeps the app anyway). Phase 9 adds a socket-only
-  timer: an open WebSocket sends a fresh `auth` message before the token expires.
-- The API client receives `getAccessToken` and `onUnauthorized`; it never imports a store.
+**Refresh (decided 2026-11-09, confirmed by chat-infra#41 on 2026-11-23; built in step 3):**
+```
+store wants a logged-in call ──► authorized(call)                           src/lib/api/authorized.ts
+   1. token = auth.freshAccessToken()     > 60 s left: the saved one (no request); else auth.refresh()
+   2. call(token)  ── 401 invalid_token ──► auth.renewAfterRejection(token): changed meanwhile → the new
+                                            one, else refresh; then call once more (a 2nd 401 fails it)
+                   ── 403 account_blocked ─► the session ends with a notice
+```
+- **One refresh at a time** (`AuthStore.refresh`): a shared promise; every logged-in call waits on it,
+  unauthenticated ones never do.
+- **Save first, then use.** Using the new refresh token makes the saved old one "discarded" on the server; a
+  restart that sent it would sign the device out (reuse). So the new pair is used only after it's saved; if
+  the save fails, the old pair stays (still the server's current token: the next refresh just gets another).
+- The new expiry counts from when the refresh was **sent** (a slow reply never makes it later).
+- Outcomes:
+  - success → saved, then used;
+  - no answer, a timeout, `5xx`, `503 tokens_unavailable` → keep the tokens, fail the request ("No
+    connection"), **never sign out**; the next call retries with the same refresh token (a lost reply is
+    fine for auth-service);
+  - `401 invalid_refresh_token` → signed out: "You were signed out. Sign in again.";
+  - `403 account_blocked` (refresh or any call) → signed out: "This account is blocked.";
+  - `403 action_not_allowed` → an error on that screen.
+- A reply arriving after a sign-out is dropped (nothing saved).
+- **The notice** is shown on the phone step (`LoginFlowStore.showNotice`, wired by RootStore). Development
+  builds add a debug line: `refresh → 401 invalid_refresh_token · 14:03:12` (the call, the answer, the
+  time), also logged. Why the server ended the session (another phone signed in, a reused token, 60 days
+  unused, the device removed) is only in auth-service's log, on purpose: telling the app would tell someone
+  holding a stolen token that they were caught (owner, 2026-11-23).
+- **No timer and no refresh on start or foreground** (owner, 2026-11-23): the app sends nothing until a
+  screen needs data. In phase 9 connecting the socket needs a fresh token (the same rule), and the gateway
+  signs a revoked device out at once with `{"type":"signed_out"}` (chat-infra#41). An open socket sends a
+  fresh `auth` message before the token expires (a socket-only timer).
+- The API client never knows a store: logged-in calls take the access token as a parameter, and stores
+  call them through `root.authorized` (`getAccessToken`, `renewAfterRejection`, `onBlocked`).
 
 **The login** (`LoginFlowStore`, a state machine; actions return `{ok}` / `{ok:false, error}`, never throw):
 ```
@@ -439,8 +460,8 @@ Each step is agreed with the owner, built on a branch and merged before the next
 2. ✅ **Login**: phone → SMS code (`otp/request`, `otp/verify`) → display name for a new number (`register`) →
    tokens in secure storage; **sign-out** (moved here from step 3, to test the login repeatedly). API client
    + generated types, country picker, login progress that survives a restart.
-3. **Session**: refresh (§7: before a request + on 401, one at a time), sign-out on `invalid_refresh_token`,
-   the devices screen (primary only); the `MobxQuery` adapter and TanStack's focus / online wiring for
+3. **Session**: 🔨 part 1 ✅ refresh (§7: before a request + on 401, one at a time), sign-out on
+   `invalid_refresh_token` with a notice, sign-out refreshing an expired token before logout; part 2: the devices screen (primary only); the `MobxQuery` adapter and TanStack's focus / online wiring for
    React Native (`focusManager` ← `AppState`, `onlineManager` ← network status).
 4. **End-to-end check**: one login traced app → ingress → auth → Postgres in Grafana.
 
