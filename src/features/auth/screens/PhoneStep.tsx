@@ -64,6 +64,12 @@ export const PhoneStep = observer(function PhoneStep({ login }: { login: LoginFl
       {login.notice ? (
         <Text style={{ color: theme.colors.danger }}>{t(`auth.notice.${login.notice}`)}</Text>
       ) : null}
+      {login.noticeDetail ? (
+        // Development builds only (the store gets it only with __DEV__): what ended the session.
+        <Text variant="caption" muted style={{ writingDirection: 'ltr' }} testID="notice-detail">
+          {login.noticeDetail}
+        </Text>
+      ) : null}
       <TextField
         label={t('auth.phone.label')}
         value={text}

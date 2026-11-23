@@ -7,7 +7,7 @@ import {
   type LoginProgressStorage,
   type SendBlocksStorage,
 } from '@/features/auth';
-import type { AuthApi } from '@/lib/api';
+import { createAuthorized, type AuthApi, type Authorized } from '@/lib/api';
 import type { Clock } from '@/lib/clock';
 import type { DeviceInfo } from '@/lib/device';
 import { createI18n, pickLanguage } from '@/lib/i18n';
@@ -38,6 +38,8 @@ export class RootStore {
   readonly queryClient: QueryClient;
   readonly auth: AuthStore;
   readonly login: LoginFlowStore;
+  /** Runs a logged-in call with a fresh access token (refresh, one retry on 401); for the stores that need it. */
+  readonly authorized: Authorized;
 
   private readonly deps: RootStoreDeps;
 
@@ -46,7 +48,12 @@ export class RootStore {
     this.i18n = createI18n(pickLanguage(deps.locales));
     this.queryClient = new QueryClient();
     this.queryClient.mount();
-    this.auth = new AuthStore({ tokenStorage: deps.tokenStorage, api: deps.api });
+    this.auth = new AuthStore({
+      tokenStorage: deps.tokenStorage,
+      api: deps.api,
+      clock: deps.clock,
+      onSessionEnded: (reason, detail) => this.login.showNotice(reason, detail),
+    });
     this.login = new LoginFlowStore({
       api: deps.api,
       completeLogin: (tokens) => this.auth.completeLogin(tokens),
@@ -54,6 +61,11 @@ export class RootStore {
       progress: deps.loginProgress,
       blocks: deps.sendBlocks,
       clock: deps.clock,
+    });
+    this.authorized = createAuthorized({
+      getAccessToken: () => this.auth.freshAccessToken(),
+      renewAfterRejection: (rejected) => this.auth.renewAfterRejection(rejected),
+      onBlocked: (error) => void this.auth.endSession('account_blocked', 'request', error),
     });
   }
 

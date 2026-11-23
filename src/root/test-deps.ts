@@ -37,6 +37,7 @@ export function fakeApi(): { [K in keyof AuthApi]: jest.Mock } {
     requestCode: unexpected('requestCode'),
     verifyCode: unexpected('verifyCode'),
     register: unexpected('register'),
+    refreshTokens: unexpected('refreshTokens'),
     logout: jest.fn(() => Promise.resolve()),
   };
 }

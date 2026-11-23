@@ -15,7 +15,12 @@ import { activeBlocks, noBlocks, type SendBlocks, type SendBlocksStorage } from 
 export type LoginStep = 'phone' | 'code' | 'name';
 
 /** A message shown on the step the user lands on after the flow moved them (e.g. back to the phone). */
-export type LoginNotice = 'registration_expired' | 'already_registered';
+export type LoginNotice =
+  | 'registration_expired'
+  | 'already_registered'
+  /** The server ended the session (refresh refused): sign in again. */
+  | 'session_ended'
+  | 'account_blocked';
 
 /**
  * `too_many_attempts`: this code can't be used any more; a new one must be requested (typing disabled).
@@ -87,6 +92,8 @@ export class LoginFlowStore {
   registrationToken: string | null = null;
   registrationExpiresAt: number | null = null;
   notice: LoginNotice | null = null;
+  /** Development builds only: what ended the session (`refresh → 401 invalid_refresh_token · 14:03:12`). */
+  noticeDetail: string | null = null;
   /** The device lock: every number waits (null: none). */
   deviceLock: DeviceLock | null = null;
   /** One wait per number: E.164 → until (Unix ms). Changed in place; the reaction on `savedBlocks` saves it. */
@@ -213,7 +220,7 @@ export class LoginFlowStore {
     if (!phone) return fail('invalid_phone');
     if (!canSignIn(this.country)) return fail('country_not_available'); // no request: server is IL-only
     if (this.blockFor(phone)) return fail('blocked'); // the screen shows the countdown
-    this.notice = null;
+    this.clearNotice();
     const result: LoginResult = yield this.sendCode(phone);
     return result;
   });
@@ -222,7 +229,7 @@ export class LoginFlowStore {
   resendCode = flow(function* (this: LoginFlowStore) {
     if (!this.phone) return fail('invalid_phone');
     if (this.secondsUntilResend > 0) return fail('blocked');
-    this.notice = null;
+    this.clearNotice();
     const result: LoginResult = yield this.sendCode(this.phone);
     return result;
   });
@@ -245,7 +252,7 @@ export class LoginFlowStore {
         this.registrationToken = reply.registration_token;
         this.registrationExpiresAt = Date.now() + reply.expires_in * 1000;
         this.step = 'name';
-        this.notice = null;
+        this.clearNotice();
         return ok;
       } catch (error) {
         // Another login of this user won a race: the server asks to retry with the same code (once).
@@ -299,7 +306,7 @@ export class LoginFlowStore {
     this.clearCode();
     this.registrationToken = null;
     this.registrationExpiresAt = null;
-    this.notice = null;
+    this.clearNotice();
   }
 
   /**
@@ -504,6 +511,17 @@ export class LoginFlowStore {
     yield this.deps.completeLogin(tokensFromReply(reply, Date.now()));
     this.reset(); // the send blocks stay: after a sign-out the number still waits (owner, 2026-11-13)
   });
+
+  /** The session ended (AuthStore.onSessionEnded): an empty phone step saying why. Not saved. */
+  showNotice(notice: LoginNotice, detail: string | null = null): void {
+    this.startOver(notice);
+    this.noticeDetail = detail;
+  }
+
+  private clearNotice(): void {
+    this.notice = null;
+    this.noticeDetail = null;
+  }
 
   /** Back to an empty phone step, with a message saying why. */
   private startOver(notice: LoginNotice): void {

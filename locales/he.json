@@ -38,7 +38,9 @@
     },
     "notice": {
       "registration_expired": "עבר יותר מדי זמן. יש לאמת את המספר שוב.",
-      "already_registered": "למספר הזה כבר יש חשבון. יש להיכנס עם קוד חדש."
+      "already_registered": "למספר הזה כבר יש חשבון. יש להיכנס עם קוד חדש.",
+      "session_ended": "יצאת מהחשבון. יש להיכנס שוב.",
+      "account_blocked": "החשבון הזה חסום."
     },
     "errors": {
       "invalid_phone": "זה לא נראה כמו מספר נייד.",

@@ -34,20 +34,23 @@ describe('createAuthApi', () => {
     ['phone_day', { limit: 'phone_day' }],
     ['an unknown name', {}],
     ['a wrong type', {}],
-  ])(
-    'requestCode reads the planned limit of a long wait in the 202 (%s)',
-    async (_case, expected) => {
-      const limit = _case === 'an unknown name' ? 'moon' : _case === 'a wrong type' ? 7 : _case;
-      const { fetch } = fakeFetch(() =>
-        json(202, { resend_after_seconds: 3000, expires_in_seconds: 300, limit }),
-      );
-      await expect(api(fetch).requestCode('+972502345678')).resolves.toEqual({
-        resend_after_seconds: 3000,
-        expires_in_seconds: 300,
-        ...expected,
-      });
-    },
-  );
+    ['null', {}],
+  ])('requestCode reads the limit of a long wait in the 202 (%s)', async (_case, expected) => {
+    const odd: Record<string, unknown> = {
+      'an unknown name': 'moon',
+      'a wrong type': 7,
+      null: null,
+    };
+    const limit = _case in odd ? odd[_case] : _case;
+    const { fetch } = fakeFetch(() =>
+      json(202, { resend_after_seconds: 3000, expires_in_seconds: 300, limit }),
+    );
+    await expect(api(fetch).requestCode('+972502345678')).resolves.toEqual({
+      resend_after_seconds: 3000,
+      expires_in_seconds: 300,
+      ...expected,
+    });
+  });
 
   it('requestCode posts the phone and returns the timers', async () => {
     const { fetch, requests } = fakeFetch(() =>
@@ -237,5 +240,39 @@ describe('createAuthApi', () => {
     await expect(
       api(fetch as unknown as typeof globalThis.fetch, 20).requestCode('+972502345678'),
     ).rejects.toMatchObject({ name: 'NetworkError', reason: 'timeout' });
+  });
+});
+
+describe('createAuthApi: refreshTokens', () => {
+  const loggedIn = {
+    status: 'logged_in',
+    access_token: 'access-2',
+    token_type: 'Bearer',
+    expires_in: 900,
+    refresh_token: 'refresh-2',
+  };
+
+  it('posts the refresh token, without an Authorization header, and returns the new pair', async () => {
+    const { fetch, requests } = fakeFetch(() => json(200, loggedIn));
+    await expect(api(fetch).refreshTokens('refresh-1')).resolves.toEqual(loggedIn);
+    expect(requests).toEqual([
+      {
+        url: 'https://auth.test/auth/token/refresh',
+        method: 'POST',
+        body: { refresh_token: 'refresh-1' },
+        auth: null,
+      },
+    ]);
+  });
+
+  it.each([
+    [401, 'invalid_refresh_token'],
+    [403, 'account_blocked'],
+    [503, 'tokens_unavailable'],
+  ])('maps %i %s to an ApiError', async (status, code) => {
+    const { fetch } = fakeFetch(() => json(status, { error: code, message: 'no' }));
+    await expect(api(fetch).refreshTokens('refresh-1')).rejects.toEqual(
+      new ApiError(status, code as never),
+    );
   });
 });
